@@ -214,6 +214,38 @@ pub fn time_fraction(h: f64, m: f64, s: f64) -> f64 {
     (h * 3600.0 + m * 60.0 + s) / 86400.0
 }
 
+/// The wall clock as an ISO 8601 UTC stamp (`2026-11-20T21:09:00Z`): the shape a threaded
+/// comment's `dT` is written in, and what a comment made here records so its date survives the
+/// file and shows up in Excel. `None` when the clock is unavailable.
+pub fn iso8601_now() -> Option<String> {
+    let ms = unix_now_ms()?;
+    let dt = chrono::DateTime::from_timestamp((ms / 1000.0) as i64, 0)?;
+    Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// An ISO 8601 stamp (a threaded comment's `dT`: `Z`, an offset, or naive) shown in the machine's
+/// time zone the way Excel shows a comment's date, `11/20/26 1:09 PM`. A naive stamp counts as
+/// UTC, which is what Excel writes. `None` when the text isn't a date.
+pub fn iso8601_local(iso: &str) -> Option<String> {
+    let raw = iso.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let utc = match chrono::DateTime::parse_from_rfc3339(raw) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f")
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M"))
+            .ok()?
+            .and_utc(),
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let shown = utc.with_timezone(&chrono::Local);
+    // The browser's zone is the page's own business; a stamp is shown as written there.
+    #[cfg(target_arch = "wasm32")]
+    let shown = utc;
+    Some(shown.format("%-m/%-d/%y %-I:%M %p").to_string())
+}
+
 pub const MONTHS: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 pub const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -228,6 +260,22 @@ mod tests {
             let serial = max_serial(sys) as f64 + 0.9999999995;
             assert_eq!(datetime_from_serial(sys, serial), None);
         }
+    }
+
+    #[test]
+    fn iso8601_stamps_read_in_every_shape_excel_writes_them() {
+        // A Z stamp, an offset stamp and Excel's own naive shape all read.
+        assert!(iso8601_local("2026-11-20T13:09:00Z").is_some());
+        assert!(iso8601_local("2026-11-20T13:09:00.00").is_some());
+        assert!(iso8601_local("2026-11-20T13:09:00-08:00").is_some());
+        assert!(iso8601_local("2026-11-20T13:09").is_some());
+        // Garbage and the empty slot of a thread with no date read as nothing.
+        assert!(iso8601_local("").is_none());
+        assert!(iso8601_local("not a date").is_none());
+        // The wall clock reads as a UTC stamp the file can hold.
+        let now = iso8601_now().expect("the clock");
+        assert!(now.ends_with('Z') && now.len() == 20, "{now}");
+        assert!(iso8601_local(&now).is_some());
     }
 
     #[test]

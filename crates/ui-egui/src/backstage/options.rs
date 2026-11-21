@@ -26,6 +26,18 @@ pub(super) fn options(app: &mut SheetApp, ui: &mut Ui) {
         app.run_or_alert("options.autoComplete", json!({"on": autocomplete}));
     }
     ui.add_space(18.0);
+    section(ui, lang, "Comments");
+    ui.horizontal(|ui| {
+        ui.label(lang.tr("User name on comments and replies"));
+        let mut name = app.session.prefs.user_name.clone();
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(200.0));
+        // Committed when the field is left, so a half-typed name never lands in the file.
+        if r.lost_focus() && app.session.prefs.user_name != name {
+            app.run_or_alert("review.userName", json!({"name": name}));
+        }
+    });
+    dim(ui, lang.tr("Comments and replies written here are signed with this name."));
+    ui.add_space(18.0);
     section(ui, lang, "Options|Save");
     let mut autosave = app.ui.autosave;
     if ui.checkbox(&mut autosave, lang.tr("Save .xlsx workbooks automatically after every change")).changed() {

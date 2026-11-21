@@ -758,11 +758,23 @@ pub(crate) fn paint_overlays(input: OverlayInput<'_>) {
             |ui| {
                 egui::Frame::popup(ui.style()).fill(if cm.threaded { Color32::WHITE } else { Color32::from_rgb(0xFF, 0xFF, 0xE1) }).show(ui, |ui| {
                     ui.set_max_width(240.0);
-                    ui.label(egui::RichText::new(format!("{}:", cm.author)).strong().color(Color32::BLACK));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(format!("{}:", cm.author)).strong().color(Color32::BLACK));
+                        // When it was written, as Excel's comment box shows it (#4545).
+                        if let Some(date) = cm.dates.first().and_then(|d| gridcraft_engine::core::date::iso8601_local(d)) {
+                            ui.label(egui::RichText::new(date).small().color(Color32::from_gray(110)));
+                        }
+                    });
                     ui.label(egui::RichText::new(&cm.text).color(Color32::BLACK));
-                    for (a, t) in &cm.replies {
+                    for (i, (a, t)) in cm.replies.iter().enumerate() {
                         ui.separator();
-                        ui.label(egui::RichText::new(format!("{a}: {t}")).color(Color32::BLACK));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(a).strong().color(Color32::BLACK));
+                            if let Some(date) = cm.dates.get(i + 1).and_then(|d| gridcraft_engine::core::date::iso8601_local(d)) {
+                                ui.label(egui::RichText::new(date).small().color(Color32::from_gray(110)));
+                            }
+                        });
+                        ui.label(egui::RichText::new(t).color(Color32::BLACK));
                     }
                 });
             },

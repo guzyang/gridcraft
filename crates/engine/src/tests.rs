@@ -4709,6 +4709,46 @@ fn editing_a_note_or_a_comment_keeps_its_thread() {
     assert!(!replaced.threaded && replaced.replies.is_empty());
 }
 
+/// A comment or reply made here records when it was written: ISO 8601 in UTC, the thread's date
+/// first and then one per reply, so the file and Excel show each entry's date (#4545).
+#[test]
+fn a_comment_and_each_reply_record_their_date() {
+    let mut s = s();
+    s.execute("review.newComment", json!({"cell": "B2", "text": "first", "author": "Ada"})).unwrap();
+    s.execute("review.replyComment", json!({"cell": "B2", "text": "one", "author": "Bob"})).unwrap();
+    s.execute("review.replyComment", json!({"cell": "B2", "text": "two", "author": "Bob"})).unwrap();
+    let d = s.doc().unwrap();
+    let c = &d.wb.active().unwrap().comments[&CellRef::parse("B2").unwrap()];
+    assert_eq!(c.dates.len(), 1 + c.replies.len());
+    assert_eq!(c.dates.len(), 3);
+    for date in &c.dates {
+        assert!(date.ends_with('Z') && date.len() == 20, "{date}");
+        assert!(crate::core::date::iso8601_local(date).is_some(), "{date}");
+    }
+    // A note has no date in Excel, and neither does one written here.
+    s.execute("review.newNote", json!({"cell": "A1", "text": "note"})).unwrap();
+    assert!(s.doc().unwrap().wb.active().unwrap().comments[&CellRef::parse("A1").unwrap()].dates.is_empty());
+}
+
+/// A thread whose earlier dates never reached the file keeps those slots empty, so a reply written
+/// here does not shift onto the date of the one before it.
+#[test]
+fn a_reply_to_a_thread_without_dates_pads_the_missing_ones() {
+    let mut s = s();
+    s.execute("review.newComment", json!({"cell": "B2", "text": "first", "author": "Ada"})).unwrap();
+    s.execute("review.replyComment", json!({"cell": "B2", "text": "one", "author": "Bob"})).unwrap();
+    if let Some(c) =
+        std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().wb).sheet_mut(0).and_then(|sh| sh.comments.get_mut(&CellRef::parse("B2").unwrap()))
+    {
+        c.dates.clear();
+    }
+    s.execute("review.replyComment", json!({"cell": "B2", "text": "two", "author": "Bob"})).unwrap();
+    let d = s.doc().unwrap();
+    let c = &d.wb.active().unwrap().comments[&CellRef::parse("B2").unwrap()];
+    assert_eq!(c.dates, vec![String::new(), String::new(), c.dates[2].clone()]);
+    assert!(c.dates[2].ends_with('Z'));
+}
+
 /// A cut moves the block's notes, hyperlinks and merged areas with it. The source's cells and
 /// pictures were removed but the block's merges and notes were not, so one merged block became
 /// two (an empty one left at the old place) and a note ended up on both the old and the new

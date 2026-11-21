@@ -1,0 +1,40 @@
+name: macOS unsigned build
+
+# Builds GridCraft for macOS on GitHub's own macOS runner and uploads the .dmg as an artifact.
+# No Apple certificate is used: the app is ad-hoc signed, so the first launch needs
+# "right-click > Open" (or: xattr -dr com.apple.quarantine /Applications/GridCraft.app).
+#
+# Run it from the Actions tab ("Run workflow"), then download the artifact from the run page.
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "universal (both), aarch64 (Apple Silicon) or x86_64 (Intel)"
+        type: choice
+        options: [universal, aarch64, x86_64]
+        default: universal
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain with both macOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build, bundle and package (ad-hoc signed)
+        env:
+          MACOS_SIGN_IDENTITY: "-"
+        run: ./packaging/macos/package.sh --arch "${{ inputs.arch }}"
+      - name: Upload the .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-macos-unsigned-${{ inputs.arch }}
+          path: dist/release/*.dmg
+          if-no-files-found: error

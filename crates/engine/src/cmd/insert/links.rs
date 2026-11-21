@@ -119,7 +119,9 @@ pub(super) fn comment(s: &mut Session, p: &Json, threaded: bool) -> Result<Json>
                 threaded,
                 resolved: false,
                 visible: false,
-                dates: vec![],
+                // A note has no date in Excel; a threaded comment records when the thread
+                // started, so the file and Excel show it (#4545).
+                dates: if threaded { crate::core::date::iso8601_now().into_iter().collect() } else { vec![] },
                 note_box: None,
             },
         );
@@ -132,9 +134,17 @@ pub(super) fn reply_comment(s: &mut Session, p: &Json) -> Result<Json> {
     let at = cell_param_on(s, p, "cell", sheet)?.unwrap_or(s.doc()?.selection.active);
     let text = str_param(p, "text").unwrap_or("").to_string();
     let author = str_param(p, "author").map(str::to_string).unwrap_or_else(|| s.prefs.user_name.clone());
+    let stamp = crate::core::date::iso8601_now().unwrap_or_default();
     edit(s, |cx| {
         let c = cx.sheet_mut(sheet)?.comments.get_mut(&at).ok_or_else(|| EngineError::Other("There's no comment in this cell.".into()))?;
+        // The thread's date first, then one per reply, in the order the file writes them; a
+        // thread whose earlier dates never reached the file keeps those slots empty rather than
+        // shifting every later reply onto the wrong date.
+        while c.dates.len() < c.replies.len() + 1 {
+            c.dates.push(String::new());
+        }
         c.replies.push((author.clone(), text.clone()));
+        c.dates.push(stamp.clone());
         Ok(Json::Null)
     })
 }

@@ -68,6 +68,23 @@ pub fn specs() -> Vec<CommandSpec> {
             s.prefs.formula_bar = bool_param(p, "on").unwrap_or(!s.prefs.formula_bar);
             Ok(json!({"on": s.prefs.formula_bar}))
         }),
+        // Who a comment made here is written as: Excel's File › Options › General user name, which
+        // its comments and replies show beside the date.
+        cmd!(
+            query "review.userName",
+            "User Name",
+            ["Review", "Comments"],
+            None,
+            "{name?: string (blank returns to the default; returns the name in use)}",
+            always,
+            |s, p| {
+                if let Some(name) = str_param(p, "name") {
+                    let name = name.trim();
+                    s.prefs.user_name = if name.is_empty() { crate::Prefs::default().user_name } else { name.to_string() };
+                }
+                Ok(json!({"name": s.prefs.user_name}))
+            }
+        ),
         cmd!(
             query "view.statusBar",
             "Customize Status Bar",
@@ -554,6 +571,20 @@ mod tests {
         // A prefs.json saved before the option existed keeps the formula bar shown.
         let old: crate::Prefs = serde_json::from_str(r#"{"userName": "Ann"}"#).unwrap();
         assert!(old.formula_bar);
+    }
+
+    #[test]
+    fn the_comment_user_name_is_a_preference_and_blank_returns_to_the_default() {
+        let mut s = Session::new();
+        assert_eq!(s.execute("review.userName", json!({})).unwrap()["name"], "GridCraft User");
+        assert_eq!(s.execute("review.userName", json!({"name": "  Ada  "})).unwrap()["name"], "Ada");
+        assert_eq!(s.prefs.user_name, "Ada");
+        // What a comment written now is signed with.
+        s.new_workbook();
+        s.execute("review.newComment", json!({"cell": "A1", "text": "hi"})).unwrap();
+        let c = &s.doc().unwrap().wb.active().unwrap().comments[&gridcraft_core::CellRef::parse("A1").unwrap()];
+        assert_eq!(c.author, "Ada");
+        assert_eq!(s.execute("review.userName", json!({"name": " "})).unwrap()["name"], "GridCraft User");
     }
 
     #[test]

@@ -52,6 +52,12 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
     });
 }
 
+/// A comment's stored ISO 8601 date, shown in the machine's zone; `None` when that entry has no
+/// date (an older file, or one written before GridCraft recorded them).
+fn comment_date(iso: Option<&String>) -> Option<String> {
+    gridcraft_engine::core::date::iso8601_local(iso?)
+}
+
 /// Lists comments and replies, links each to its cell, and runs delete/resolve/reopen/reply commands.
 fn comments(app: &mut SheetApp, ui: &mut Ui) {
     let Some(d) = app.session.active() else { return };
@@ -75,13 +81,26 @@ fn comments(app: &mut SheetApp, ui: &mut Ui) {
                         app.grid.ensure_visible = true;
                     }
                     ui.label(egui::RichText::new(&c.author).color(t.text_dim));
+                    // When the thread started, in the machine's zone, as Excel shows it.
+                    if let Some(date) = comment_date(c.dates.first()) {
+                        ui.label(egui::RichText::new(date).small().color(t.text_dim));
+                    }
                     if c.resolved {
                         ui.label(egui::RichText::new("Resolved").small().color(t.accent));
                     }
                 });
                 ui.label(&c.text);
-                for (a, txt) in &c.replies {
-                    ui.label(egui::RichText::new(format!("↳ {a}: {txt}")).color(t.text));
+                for (i, (a, txt)) in c.replies.iter().enumerate() {
+                    ui.separator();
+                    // Each reply keeps its own entry: who wrote it on the date line, the text under
+                    // it, so a multi-line note stays a paragraph rather than one wrapped sentence.
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(format!("↳ {a}")).strong().color(t.text));
+                        if let Some(date) = comment_date(c.dates.get(i + 1)) {
+                            ui.label(egui::RichText::new(date).small().color(t.text_dim));
+                        }
+                    });
+                    ui.label(egui::RichText::new(txt).color(t.text));
                 }
                 let key = egui::Id::unique(("reply", &cell));
                 let mut draft: String = ui.ctx().data_mut(|m| m.get_temp(key)).unwrap_or_default();
@@ -96,9 +115,17 @@ fn comments(app: &mut SheetApp, ui: &mut Ui) {
                             app.run_or_alert("review.resolveComment", json!({"cell": cell, "resolved": !c.resolved}));
                         }
                         let send = ui.small_button("Send").clicked();
-                        let r = ui.add(egui::TextEdit::singleline(&mut draft).hint_text("Reply…").desired_width(ui.available_width()));
-                        if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) || send) && !draft.is_empty() {
-                            app.run_or_alert("review.replyComment", json!({"cell": cell, "text": draft}));
+                        // Enter starts a new line, as in Excel's reply box; Cmd/Ctrl+Enter (or Send)
+                        // posts the reply (#4545: a comment's own paragraphs need the newline).
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut draft)
+                                .hint_text("Reply…  (⌘↵ or Ctrl+Enter to send)")
+                                .desired_width(ui.available_width())
+                                .desired_rows(2),
+                        );
+                        let key_send = r.has_focus() && ui.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::Enter));
+                        if (send || key_send) && !draft.trim().is_empty() {
+                            app.run_or_alert("review.replyComment", json!({"cell": cell, "text": draft.trim_end().to_string()}));
                             draft.clear();
                         }
                     });
