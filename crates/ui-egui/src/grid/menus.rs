@@ -191,14 +191,7 @@ pub(super) fn context_menu(app: &mut SheetApp, ui: &mut egui::Ui) {
                         "ui:insertCells" => app.open_dialog("insertCells", json!({})),
                         "ui:deleteCells" => app.open_dialog("deleteCells", json!({})),
                         "ui:formatCells" => app.open_dialog("formatCells", json!({})),
-                        "ui:newComment" => {
-                            // The comment card beside the cell, as Excel's comment box: it takes the
-                            // first entry on a cell with no comment and the next entry on one that
-                            // already has a thread.
-                            if let Some(d) = app.session.active() {
-                                app.grid.comment_card = Some(d.selection.active);
-                            }
-                        }
+                        "ui:newComment" => app.open_comment_card(),
                         "ui:newNote" => app.open_dialog("comment", json!({"threaded": false})),
                         "ui:defineName" => app.open_dialog("defineName", json!({})),
                         "ui:insertLink" => app.open_dialog("insertLink", json!({})),

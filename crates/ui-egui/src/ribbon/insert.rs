@@ -200,7 +200,8 @@ pub(super) fn insert(app: &mut SheetApp, ui: &mut Ui) {
     let __k = big_button(ui, Icon::Comment, "Comment", "New Comment", false);
     control_keytip(app, ui, &__k, "dialog:comment");
     if __k.clicked() {
-        app.open_dialog("comment", json!({"threaded": true}));
+        // The comment card beside the cell, as Excel's comment box.
+        app.open_comment_card();
     }
     sep(ui);
     let __k = big_button(ui, Icon::TextBox, "Text\nBox", "Text Box", false);

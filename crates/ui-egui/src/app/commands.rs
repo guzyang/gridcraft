@@ -375,6 +375,14 @@ impl SheetApp {
         self.session.active().and_then(|d| d.wb.active().map(|s| s.is_protected())).unwrap_or(false)
     }
 
+    /// Opens the comment card beside the active cell, as Excel's comment box: the thread, and the
+    /// box the next entry goes into.
+    pub fn open_comment_card(&mut self) {
+        if let Some(d) = self.session.active() {
+            self.grid.comment_card = Some(d.selection.active);
+        }
+    }
+
     pub fn open_dialog(&mut self, name: &str, params: Json) {
         if let Err(e) = self.commit_text_box_edit() {
             self.message = Some(("Text Box".into(), clean_error(&e)));

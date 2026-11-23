@@ -21,7 +21,8 @@ pub(super) fn review(app: &mut SheetApp, ui: &mut Ui) {
     let __k = big_button(ui, Icon::Comment, "New\nComment", "New Comment", false);
     control_keytip(app, ui, &__k, "dialog:comment");
     if __k.clicked() {
-        app.open_dialog("comment", json!({"threaded": true}));
+        // The comment card beside the cell, as Excel's comment box.
+        app.open_comment_card();
     }
     let __k = big_button(ui, Icon::Delete, "Delete", "Delete Comment", false);
     control_keytip(app, ui, &__k, "review.deleteComment");
