@@ -132,6 +132,11 @@ pub(super) fn context_menu(app: &mut SheetApp, ui: &mut egui::Ui) {
             // On a cell with a link Excel offers to edit, open or remove it (#2120).
             let link =
                 app.session.active().and_then(|d| d.wb.active().and_then(|sh| sh.hyperlinks.get(&d.selection.active)).map(|l| l.target.clone()));
+            let has_comment = app
+                .session
+                .active()
+                .and_then(|d| d.wb.active().and_then(|sh| sh.comments.get(&d.selection.active).filter(|c| c.threaded).map(|_| true)))
+                .unwrap_or(false);
             let mut items: Vec<(&str, &str)> = vec![
                 ("Cut", "edit.cut"),
                 ("Copy", "edit.copy"),
@@ -146,7 +151,8 @@ pub(super) fn context_menu(app: &mut SheetApp, ui: &mut egui::Ui) {
                 ("Sort A to Z", "data.sortAscending"),
                 ("Sort Z to A", "data.sortDescending"),
                 ("-", ""),
-                ("New Comment", "ui:newComment"),
+                // A cell that already has a thread says Edit Comment, as Excel does.
+                (if has_comment { "Edit Comment" } else { "New Comment" }, "ui:newComment"),
                 ("New Note", "ui:newNote"),
                 ("-", ""),
                 ("Format Cells…", "ui:formatCells"),
@@ -185,7 +191,14 @@ pub(super) fn context_menu(app: &mut SheetApp, ui: &mut egui::Ui) {
                         "ui:insertCells" => app.open_dialog("insertCells", json!({})),
                         "ui:deleteCells" => app.open_dialog("deleteCells", json!({})),
                         "ui:formatCells" => app.open_dialog("formatCells", json!({})),
-                        "ui:newComment" => app.open_dialog("comment", json!({"threaded": true})),
+                        "ui:newComment" => {
+                            // The comment card beside the cell, as Excel's comment box: it takes the
+                            // first entry on a cell with no comment and the next entry on one that
+                            // already has a thread.
+                            if let Some(d) = app.session.active() {
+                                app.grid.comment_card = Some(d.selection.active);
+                            }
+                        }
                         "ui:newNote" => app.open_dialog("comment", json!({"threaded": false})),
                         "ui:defineName" => app.open_dialog("defineName", json!({})),
                         "ui:insertLink" => app.open_dialog("insertLink", json!({})),

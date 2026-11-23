@@ -442,6 +442,12 @@ fn handle_press(app: &mut SheetApp, input: &InteractionInput<'_>) {
         return;
     }
     let c = geo.cell_at(sh, p);
+    // The comment marker in a cell's corner opens the card beside it, as Excel's does.
+    if super::comment_card::marker_hit(sh, geo, c, p) {
+        let _ = app.run("selection.set", json!({"cell": c.a1()}));
+        app.grid.comment_card = Some(c);
+        return;
+    }
     // Data validation list arrow next to the active cell.
     if let Some(r) = validation_arrow(sh, geo, sel.active)
         && r.contains(p)

@@ -25,6 +25,7 @@ type DetailsCache = ((u64, u64, usize, usize), Option<std::collections::HashSet<
 mod active_row;
 pub use active_row::active_row_band;
 mod cell_paint;
+mod comment_card;
 mod cursor;
 mod editor;
 mod geo;
@@ -306,6 +307,8 @@ pub struct GridState {
     pub list_picker: Option<CellRef>,
     /// Open task pane: comments, watch, selection, formatChart.
     pub pane: Option<String>,
+    /// The cell whose comment card is open beside it, as Excel's modern comment box.
+    pub comment_card: Option<CellRef>,
     /// Ink stroke being drawn (sheet points).
     pub ink: Vec<[f32; 2]>,
     /// Page ranges for Page Break Preview, cached per (doc uid, revision, sheet).

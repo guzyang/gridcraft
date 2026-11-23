@@ -28,9 +28,10 @@ pub(super) fn options(app: &mut SheetApp, ui: &mut Ui) {
     ui.add_space(18.0);
     section(ui, lang, "Comments");
     ui.horizontal(|ui| {
-        ui.label(lang.tr("User name on comments and replies"));
+        let label = ui.label(lang.tr("User name on comments and replies"));
         let mut name = app.session.prefs.user_name.clone();
-        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(200.0));
+        // The field is named by its label, as every other field on this page is.
+        let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(200.0)).labelled_by(label.id);
         // Committed when the field is left, so a half-typed name never lands in the file.
         if r.lost_focus() && app.session.prefs.user_name != name {
             app.run_or_alert("review.userName", json!({"name": name}));

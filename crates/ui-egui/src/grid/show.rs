@@ -1,4 +1,5 @@
 use super::Trace;
+use super::comment_card::comment_card;
 use super::cursor::update_cursor;
 use super::editor::{in_cell_editor, list_picker, validation_arrow};
 use super::geo::Geo;
@@ -361,6 +362,9 @@ impl<F: Fn(&mut SheetApp, egui::Vec2) -> Geo> ActiveCellVisibility<'_, F> {
 
 fn show_grid_interactions(app: &mut SheetApp, ui: &mut egui::Ui, resp: &egui::Response, geo: &Geo, sh: &Sheet, wb: &Workbook) {
     let previous_popups = (app.grid.filter_menu, app.grid.list_picker, app.grid.header_menu, app.grid.fill_menu);
+    // Whether the comment card was open before this frame's presses: the press that opens it must
+    // not close it again in the same frame.
+    let was_comment_card_open = app.grid.comment_card.is_some();
     // A pan the grid never saw end (it was hidden mid-drag) must not swallow the next press.
     if app.grid.touch_pan && !resp.dragged() && !resp.drag_stopped() {
         app.grid.touch_pan = false;
@@ -387,6 +391,7 @@ fn show_grid_interactions(app: &mut SheetApp, ui: &mut egui::Ui, resp: &egui::Re
     fill_options_tag(app, ui, geo, sh);
     object_menu(app, ui);
     error_check_tag(app, ui, geo, sh);
+    comment_card(app, ui, geo, was_comment_card_open);
 }
 
 fn update_zoom_glide(app: &mut SheetApp, ui: &egui::Ui, place: (u64, usize), zoom: u16, now: f64) {
@@ -741,6 +746,8 @@ pub(crate) fn paint_overlays(input: OverlayInput<'_>) {
     // Notes: shown on hover (or always when marked visible).
     let hover = app.grid.hover_cell;
     let all_notes = app.session.show_all_notes;
+    // The comment marker in the corner of every cell with a thread, as Excel draws it.
+    super::comment_card::paint_markers(p, sh, geo);
     for (c, cm) in &sh.comments {
         let show = cm.visible || (all_notes && !cm.threaded) || hover == Some(*c);
         if !show || app.grid.drag != Drag::None {
