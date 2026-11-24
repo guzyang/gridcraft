@@ -8,12 +8,6 @@ name: macOS unsigned build
 
 on:
   workflow_dispatch:
-    inputs:
-      arch:
-        description: "universal (both), aarch64 (Apple Silicon) or x86_64 (Intel)"
-        type: choice
-        options: [universal, aarch64, x86_64]
-        default: universal
 
 permissions:
   contents: read
@@ -29,10 +23,10 @@ jobs:
           git clone --depth 1 https://github.com/storytold/craft-fonts.git "$RUNNER_TEMP/craft-fonts"
           git -C "$RUNNER_TEMP/craft-fonts" fetch --depth 1 origin b076417b5880bd4154bd22f00695b1d28c6bea83
           git -C "$RUNNER_TEMP/craft-fonts" checkout -q b076417b5880bd4154bd22f00695b1d28c6bea83
-      - name: Rust toolchain with both macOS targets
+      - name: Rust toolchain with the Apple Silicon target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
       - name: Build, bundle and package (ad-hoc signed)
         env:
           MACOS_SIGN_IDENTITY: "-"
