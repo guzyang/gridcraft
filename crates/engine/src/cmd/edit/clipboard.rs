@@ -325,6 +325,13 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
                 if let Some(cl) = cell.as_mut() {
                     numeric_from_html(cl, v, html.get(ri).and_then(|r| r.get(ci)), &mut cx.wb);
                 }
+                // The formatting the source cell had, so a paste from Excel keeps its bold,
+                // underline, colours and font instead of dropping them (#4571).
+                if let (Some(cl), Some(hc)) = (cell.as_mut(), html.get(ri).and_then(|r| r.get(ci)))
+                    && let Some(style) = hc.style.as_ref()
+                {
+                    apply_html_style(cl, style, &mut cx.wb);
+                }
                 let sh = cx.sheet_mut(sheet)?;
                 match cell {
                     Some(cell) => sh.set_cell(c, cell),
@@ -342,6 +349,51 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
         Ok(())
     })?;
     Ok(json!({"rows": h, "cols": w}))
+}
+
+/// A pasted cell takes the formatting the source cell had, as the clipboard's HTML states it: the
+/// bold, italic and underline, the font's colour and face, the cell's background colour and the
+/// text's alignment. What the markup does not state stays as the destination had it.
+fn apply_html_style(cell: &mut Cell, style: &crate::clip_style::HtmlStyle, wb: &mut gridcraft_model::Workbook) {
+    let base = cell.style;
+    let id = wb.styles.derive(base, |st| {
+        if let Some(bold) = style.bold {
+            st.font.bold = bold;
+        }
+        if let Some(italic) = style.italic {
+            st.font.italic = italic;
+        }
+        if let Some(underline) = style.underline {
+            st.font.underline = if underline { gridcraft_model::Underline::Single } else { gridcraft_model::Underline::None };
+        }
+        if let Some(color) = style.font_color {
+            st.font.color = gridcraft_model::Color::Rgb(color);
+        }
+        if let Some(color) = style.fill_color {
+            st.fill = gridcraft_model::Fill::solid(gridcraft_model::Color::Rgb(color));
+        }
+        if let Some(name) = style.font_name.as_ref() {
+            st.font.name = name.clone();
+        }
+        if let Some(size) = style.font_size {
+            st.font.size = size;
+        }
+        if let Some(align) = style.align.as_deref() {
+            st.align.h = match align {
+                "left" => gridcraft_model::HAlign::Left,
+                "center" => gridcraft_model::HAlign::Center,
+                "right" => gridcraft_model::HAlign::Right,
+                _ => st.align.h,
+            };
+        }
+        if let Some(fmt) = style.num_fmt.as_ref()
+            && !fmt.is_empty()
+            && fmt != "General"
+        {
+            st.num_fmt = gridcraft_model::NumFmt::new(fmt);
+        }
+    });
+    cell.style = id;
 }
 
 /// A pasted cell that came out as text ("Rp10,000.00" isn't en-US input) becomes the number the

@@ -122,6 +122,32 @@ fn pasted_currency_text_keeps_the_number_from_the_clipboard_html() {
 }
 
 #[test]
+fn a_paste_from_excel_keeps_the_source_formatting() {
+    // The clipboard's HTML states the source cell's format: the class its `<style>` block defines
+    // and the cell's own `style` attribute. A paste keeps it, instead of dropping every format.
+    let mut s = s();
+    let html = r#"<style><!--
+table.xl65{font-size:11.0pt;font-family:"Calibri",Arial}
+td.xl65{font-weight:bold;color:rgb(0,0,255);background-color:#D9E1F2;text-align:center}
+td.xl70{text-decoration:underline;font-family:"SimSun"}
+--></style><table><tr><td class="xl65">中文</td><td class="xl70">下划线</td></tr></table>"#;
+    s.execute("edit.paste", json!({"at": "A1", "text": "中文\t下划线", "html": html})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let a1 = sh.style_id(CellRef::parse("A1").unwrap());
+    let st = d.wb.styles.get(a1);
+    assert!(st.font.bold, "the bold of the source cell is kept");
+    assert_eq!(st.font.color, gridcraft_model::Color::Rgb(0x0000FF), "the font colour is kept");
+    assert_eq!(st.fill.fg, gridcraft_model::Color::Rgb(0xD9E1F2), "the background colour is kept");
+    assert_eq!(st.align.h, gridcraft_model::HAlign::Center, "the alignment is kept");
+    let b1 = sh.style_id(CellRef::parse("B1").unwrap());
+    let st = d.wb.styles.get(b1);
+    assert_eq!(st.font.underline, gridcraft_model::Underline::Single, "the underline is kept");
+    assert_eq!(st.font.name, "SimSun", "the font of the source cell is kept");
+    assert!(!st.font.bold, "a cell with no bold stays unbold");
+}
+
+#[test]
 fn pasting_html_with_huge_spans_reads_only_the_text_shape() {
     // #2171: a web page's clipboard HTML with enormous colspan/rowspan crashed paste (OOM). The
     // HTML is now read only as far as the tab-separated text reaches; its numbers still apply.

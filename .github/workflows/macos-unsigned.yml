@@ -24,6 +24,11 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch the craft-fonts faces
+        run: |
+          git clone --depth 1 https://github.com/storytold/craft-fonts.git "$RUNNER_TEMP/craft-fonts"
+          git -C "$RUNNER_TEMP/craft-fonts" fetch --depth 1 origin b076417b5880bd4154bd22f00695b1d28c6bea83
+          git -C "$RUNNER_TEMP/craft-fonts" checkout -q b076417b5880bd4154bd22f00695b1d28c6bea83
       - name: Rust toolchain with both macOS targets
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -31,6 +36,10 @@ jobs:
       - name: Build, bundle and package (ad-hoc signed)
         env:
           MACOS_SIGN_IDENTITY: "-"
+          # The faces the release build embeds, so Chinese text has the intended face instead of
+          # whatever the machine happens to have.
+          CRAFT_FONTS_DIR: ${{ runner.temp }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
         run: |
           # One job builds both packages: the Apple Silicon one (small enough to mail as an
           # attachment) and the universal one (Intel + Apple Silicon). Both macOS runner pools

@@ -17,13 +17,15 @@ const MAX_ROW_SPAN: usize = gridcraft_core::MAX_ROWS as usize;
 /// table is ignored: the HTML only refines cells of the tab-separated text, which stays the source.
 const MAX_HTML_CELLS: usize = 1_000_000;
 
-/// One table cell: its visible text, the number the source recorded for it, if any, and whether
-/// it is a header cell (`<th>`).
+/// One table cell: its visible text, the number the source recorded for it, if any, whether
+/// it is a header cell (`<th>`), and the formatting the markup gives it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HtmlCell {
     pub text: String,
     pub num: Option<f64>,
     pub header: bool,
+    /// The cell's bold, underline, colours and font, when the markup states them.
+    pub style: Option<crate::clip_style::HtmlStyle>,
 }
 
 /// The cells of the first table in `html`, row by row, read no further than `max_rows` rows of
@@ -36,6 +38,8 @@ pub(crate) fn table_cells(html: &str, max_rows: usize, max_cols: usize) -> Vec<V
     if html.len() > MAX_HTML {
         return grid.rows;
     }
+    // The classes the markup's `<style>` block defines, read once for the whole paste.
+    let classes = crate::clip_style::css_classes(html);
     let mut cell: Option<OpenCell> = None;
     let mut in_table = false;
     let mut rest = html;
@@ -90,7 +94,8 @@ pub(crate) fn table_cells(html: &str, max_rows: usize, max_cols: usize) -> Vec<V
                 let num = attr(attrs, "x:num").or_else(|| attr(attrs, "sdval")).and_then(|v| v.trim().parse::<f64>().ok()).filter(|n| n.is_finite());
                 let colspan = span(attrs, "colspan", MAX_SPAN);
                 let rowspan = span(attrs, "rowspan", MAX_ROW_SPAN);
-                cell = Some(OpenCell { cell: HtmlCell { text: String::new(), num, header: name == "th" }, colspan, rowspan });
+                let style = crate::clip_style::cell_style(attrs, &classes);
+                cell = Some(OpenCell { cell: HtmlCell { text: String::new(), num, header: name == "th", style }, colspan, rowspan });
             }
             ("td" | "th", true) | ("tr", true) => grid.finish(&mut cell),
             ("br", _) => {
