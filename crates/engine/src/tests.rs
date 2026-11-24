@@ -1697,6 +1697,70 @@ fn hidden_formulas_stay_hidden_on_protected_sheets() {
     assert_eq!(r["results"][0]["value"], "7");
 }
 
+/// #3781: sorting a range keeps a formula's cross-sheet reference with its record, as Excel
+/// does: `=Rates!A2` stays `=Rates!A2` when its row moves up, so every record keeps the value
+/// it was matched with.
+#[test]
+fn sorting_keeps_a_cross_sheet_reference_with_its_record() {
+    let mut s = s();
+    let data = s.doc().unwrap().wb.sheets[0].name.clone();
+    s.execute("home.insertSheet", json!({"name": "Rates"})).unwrap();
+    s.execute("range.setValues", json!({"range": "Rates!A1", "values": [[10], [100], [1000]]})).unwrap();
+    // The formulas are entered as formulas, as a user would, on the sheet with the records.
+    for (row, (key, rate)) in [("c", 1), ("a", 2), ("b", 3)].into_iter().enumerate() {
+        let r = row + 1;
+        s.execute("cell.set", json!({"cell": format!("{data}!A{r}"), "input": key})).unwrap();
+        s.execute("cell.set", json!({"cell": format!("{data}!B{r}"), "input": format!("=Rates!A{rate}")})).unwrap();
+    }
+    s.execute("data.sort", json!({"range": format!("{data}!A1:B3"), "header": false, "keys": [{"column": "A", "order": "asc"}]})).unwrap();
+    let d = s.doc().unwrap();
+    let idx = d.wb.sheet_index(&data).expect("the records are on their own sheet");
+    let sh = d.wb.sheet(idx).expect("that sheet");
+    let val = |c: &str| sh.value(CellRef::parse(c).unwrap());
+    let formula = |c: &str| sh.cell(CellRef::parse(c).unwrap()).and_then(|cell| cell.formula.as_ref()).map(|f| f.text.clone()).unwrap_or_default();
+    // The keys are in order and every formula kept the rate it was matched with.
+    assert_eq!(val("A1"), Value::text("a"));
+    assert_eq!(val("A2"), Value::text("b"));
+    assert_eq!(val("A3"), Value::text("c"));
+    assert_eq!(formula("B1"), "Rates!A2");
+    assert_eq!(formula("B2"), "Rates!A3");
+    assert_eq!(formula("B3"), "Rates!A1");
+    assert_eq!(val("B1"), Value::number(100.0));
+    assert_eq!(val("B2"), Value::number(1000.0));
+    assert_eq!(val("B3"), Value::number(10.0));
+}
+
+/// #3763: a copy of a worksheet reads its own cells, so the formulas that name the sheet they
+/// are on follow the copy, as Excel's do.
+#[test]
+fn copying_a_worksheet_makes_its_self_references_follow_the_copy() {
+    let mut s = s();
+    s.execute("sheet.rename", json!({"name": "Source"})).unwrap();
+    s.execute("range.setValues", json!({"range": "A1", "values": [[10], [20]]})).unwrap();
+    s.execute("cell.set", json!({"cell": "B1", "input": "=Source!A1*2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=A1*2"})).unwrap();
+    s.execute("cell.set", json!({"cell": "D1", "input": "=SUM(Source!A1:A2)"})).unwrap();
+    s.execute("sheet.move", json!({"sheet": 0, "to": 1, "copy": true})).unwrap();
+    let d = s.doc().unwrap();
+    let name = d.wb.sheet_index("Source (2)").expect("the copy is named Source (2)");
+    let copy = d.wb.sheet(name).unwrap();
+    let at = |c: &str| {
+        let r = CellRef::parse(c).unwrap();
+        copy.cells.get(r).and_then(|cell| cell.formula.as_ref()).map(|f| f.text.clone()).unwrap_or_default()
+    };
+    assert_eq!(at("B1"), "'Source (2)'!A1*2");
+    assert_eq!(at("D1"), "SUM('Source (2)'!A1:A2)");
+    // The unqualified reference is untouched: it already read the copy.
+    assert_eq!(at("C1"), "A1*2");
+    // The original keeps its own formulas.
+    let original = d.wb.sheet(0).unwrap();
+    let orig_at = |c: &str| {
+        let r = CellRef::parse(c).unwrap();
+        original.cells.get(r).and_then(|cell| cell.formula.as_ref()).map(|f| f.text.clone()).unwrap_or_default()
+    };
+    assert_eq!(orig_at("B1"), "Source!A1*2");
+}
+
 #[test]
 fn case_sensitive_sort_puts_lowercase_first() {
     let mut s = s();

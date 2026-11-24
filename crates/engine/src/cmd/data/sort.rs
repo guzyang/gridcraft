@@ -199,7 +199,10 @@ fn do_sort(s: &mut Session, sheet: usize, r: RangeRef, header: bool, keys: Vec<S
                     && let Some(f) = &c.formula
                     && let Some(e) = f.expr()
                 {
-                    let shifted = gridcraft_formula::adjust::shift_relative(e, dst.row as i64 - src.row as i64, dst.col as i64 - src.col as i64);
+                    // A reference to another sheet travels with its record, as Excel keeps it
+                    // (#3781); only the formula's own sheet's references move.
+                    let shifted =
+                        gridcraft_formula::adjust::shift_relative_same_sheet(e, dst.row as i64 - src.row as i64, dst.col as i64 - src.col as i64);
                     c.formula = Some(Arc::new(Formula::from_expr(shifted)));
                 }
                 if let Some(picture) = sh.cell_pictures.get(&src) {

@@ -16,6 +16,19 @@ pub fn shift_relative(e: Expr, dr: i64, dc: i64) -> Expr {
     })
 }
 
+/// Relative references that name another sheet stay as they are when a sort moves the row they
+/// are in: `=Rates!A2` travels with its record, as Excel keeps it (#3781). Unqualified references,
+/// which point at the formula's own sheet, move as they always did.
+pub fn shift_relative_same_sheet(e: Expr, dr: i64, dc: i64) -> Expr {
+    e.map(&mut |x| match x {
+        Expr::Ref(r) if matches!(r.sheet, SheetSel::Current) => match shift_ref(r, dr, dc) {
+            Some(r) => Expr::Ref(r),
+            None => Expr::Error(CellError::Ref),
+        },
+        other => other,
+    })
+}
+
 /// Defined names: relative parts move by `(dr, dc)`, wrapping around the sheet's edges. Files
 /// store a name's relative references as seen from A1 (a name for "the cell to the left" defined
 /// in B1 is `Sheet1!XFD1`), and a use in another cell moves them by that cell's offset from A1.
