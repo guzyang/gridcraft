@@ -41,11 +41,9 @@ jobs:
           CRAFT_FONTS_DIR: ${{ runner.temp }}/craft-fonts
           CRAFT_FONTS_REQUIRED: "1"
         run: |
-          # One job builds both packages: the Apple Silicon one (small enough to mail as an
-          # attachment) and the universal one (Intel + Apple Silicon). Both macOS runner pools
-          # are often busy, so the two are built here rather than in two jobs that each wait.
+          # Apple Silicon only: it is the machine the user has, it builds in half the time and
+          # the .dmg is half the size. A universal build is a separate run if it is ever needed.
           ./packaging/macos/package.sh --arch aarch64
-          ./packaging/macos/package.sh --arch universal
       - name: Upload the .dmg files
         uses: actions/upload-artifact@v4
         with:
