@@ -270,8 +270,11 @@ fn remap_workbook_external_ordinals(wb: &mut Workbook, remap: &[Option<usize>], 
             let Some(fm) = &cell.formula else { continue };
             match remap_external_formula(&fm.text, remap) {
                 Ok(Some(rewritten)) => {
-                    let mut updated = (**fm).clone();
-                    updated.text = rewritten;
+                    // Re-parse: the ordinal in the text changed, and the parsed expression the
+                    // writer prints from must change with it.
+                    let mut updated = gridcraft_model::Formula::new(&rewritten);
+                    updated.array = fm.array;
+                    updated.dynamic = fm.dynamic;
                     cell.formula = Some(Arc::new(updated));
                 }
                 Ok(None) => {}

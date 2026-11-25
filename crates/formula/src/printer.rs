@@ -16,6 +16,12 @@ fn sheet_prefix(s: &SheetSel) -> String {
             let joined = format!("{a}:{b}");
             if needs_quotes(a) || needs_quotes(b) { format!("'{}'!", joined.replace('\'', "''")) } else { format!("{joined}!") }
         }
+        SheetSel::External { link, sheet } => {
+            let inner = format!("[{link}]{sheet}");
+            if needs_quotes(sheet) { format!("'{}'!", inner.replace('\'', "''")) } else { format!("{inner}!") }
+        }
+        // Kept verbatim so a formula is written back as it was read.
+        SheetSel::ExternalFile { spec, .. } => format!("'{}'!", spec.replace('\'', "''")),
     }
 }
 
@@ -62,11 +68,7 @@ fn range_a1(r: &Reference, sep: &str) -> String {
 fn push_range_a1(s: &mut String, r: &Reference, sep: &str) {
     match &r.sheet {
         SheetSel::Current => {}
-        SheetSel::Named(n) => {
-            s.push_str(&quote_sheet(n));
-            s.push('!');
-        }
-        sheet @ SheetSel::Span(_, _) => s.push_str(&sheet_prefix(sheet)),
+        sheet => s.push_str(&sheet_prefix(sheet)),
     }
     let dollar = |abs: bool| if abs { "$" } else { "" };
     match &r.kind {

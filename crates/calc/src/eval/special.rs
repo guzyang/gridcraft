@@ -94,6 +94,8 @@ impl Precedents<'_> {
                     }
                 }
             }
+            // Another workbook's cells are not part of this workbook's dependency graph.
+            SheetSel::External { .. } | SheetSel::ExternalFile { .. } => {}
         }
     }
 
@@ -144,6 +146,7 @@ impl Precedents<'_> {
                         SheetSel::Current => Some(self.sheet),
                         SheetSel::Named(name) => self.wb.sheet_index(name),
                         SheetSel::Span(..) => None,
+                        SheetSel::External { .. } | SheetSel::ExternalFile { .. } => None,
                     };
                     let report = si
                         .and_then(|i| self.wb.sheet(i))

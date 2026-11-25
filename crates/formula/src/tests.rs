@@ -592,3 +592,46 @@ fn wrappers_stacked_across_levels_are_bounded_as_a_whole() {
     assert!(parse(&format!("{}1{}", "(".repeat(200), ")".repeat(200))).is_ok());
     assert!(parse(&format!("={}", vec!["A1%"; 100].join("+"))).is_ok(), "siblings are not stacked");
 }
+const PATH_FORM: &str = r"'C:\dir\[Book2.xlsx]Sheet1'!A1";
+const PATH_FORM_DATA: &str = r"'C:\dir\[Book2.xlsx]Data'!A1";
+
+
+#[test]
+fn external_workbook_references_round_trip() {
+    // The file's index form: the link's position in <externalReferences>.
+    assert_eq!(rt("[1]Sheet1!A1"), "[1]Sheet1!A1");
+    assert_eq!(rt("[1]Sheet1!$A$1:$B$2"), "[1]Sheet1!$A$1:$B$2");
+    assert_eq!(rt("SUM([2]Data!A1:A9)"), "SUM([2]Data!A1:A9)");
+    // A workbook named by its file, as the formula bar shows it.
+    assert_eq!(rt("'[Book2.xlsx]Sheet1'!A1"), "'[Book2.xlsx]Sheet1'!A1");
+    assert_eq!(rt("'[Book2.xlsx]Sheet 1'!$B$2"), "'[Book2.xlsx]Sheet 1'!$B$2");
+    // ... with the folder in front of the brackets.
+    assert_eq!(rt(PATH_FORM), PATH_FORM);
+}
+
+#[test]
+fn external_reference_names_its_workbook_and_sheet() {
+    let Ok(Expr::Ref(r)) = parse("[3]Data!A1") else { panic!("index form parses") };
+    assert_eq!(r.sheet, SheetSel::External { link: 3, sheet: "Data".into() });
+    let Ok(Expr::Ref(r)) = parse("'[Book2.xlsx]Data'!A1") else { panic!("file form parses") };
+    assert_eq!(r.sheet, SheetSel::ExternalFile { spec: "[Book2.xlsx]Data".into(), file: "Book2.xlsx".into(), sheet: "Data".into() });
+    let Ok(Expr::Ref(r)) = parse(PATH_FORM_DATA) else { panic!("path form parses") };
+    assert_eq!(r.sheet_name(), None, "an external sheet is not one of this workbook's");
+    assert!(matches!(r.sheet, SheetSel::ExternalFile { ref file, .. } if file.ends_with("Book2.xlsx")));
+}
+
+#[test]
+fn local_edits_leave_external_references_alone() {
+    let e = parse("[1]Sheet1!A1+Sheet1!A1").expect("parses");
+    let inserted = adjust(e.clone(), "Sheet1", "Sheet1", &Edit::Insert { axis: Axis::Rows, at: 0, count: 1 });
+    assert_eq!(print(&inserted), "[1]Sheet1!A1+Sheet1!A2");
+    let renamed = rename_sheet(e, "Sheet1", "Other");
+    assert_eq!(print(&renamed), "[1]Sheet1!A1+Other!A1");
+}
+
+#[test]
+fn structured_references_still_parse() {
+    // `[` starts a table's column list unless digits and a sheet name follow it.
+    assert_eq!(rt("Sales[Units]*2"), "Sales[Units]*2");
+    assert_eq!(rt("SUM([1]Data!A1:A9)+Sales[Units]"), "SUM([1]Data!A1:A9)+Sales[Units]");
+}

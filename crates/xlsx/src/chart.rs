@@ -364,7 +364,7 @@ fn ref_target(wb: &Workbook, sheet_idx: usize, f: &str) -> Option<(usize, RangeR
     let si = match &r.sheet {
         SheetSel::Current => sheet_idx,
         SheetSel::Named(n) => wb.sheet_index(n)?,
-        SheetSel::Span(..) => return None,
+        SheetSel::Span(..) | SheetSel::External { .. } | SheetSel::ExternalFile { .. } => return None,
     };
     Some((si, r.range()))
 }

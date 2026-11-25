@@ -114,6 +114,8 @@ fn on_target(r: &Reference, host: &str, target: &str) -> bool {
         SheetSel::Current => host.eq_ignore_ascii_case(target),
         SheetSel::Named(n) => n.eq_ignore_ascii_case(target),
         SheetSel::Span(..) => false,
+        // Another workbook's grid: a local edit never moves it.
+        SheetSel::External { .. } | SheetSel::ExternalFile { .. } => false,
     }
 }
 
@@ -209,6 +211,11 @@ fn map_span(lo: u32, hi: u32, at: u32, count: u32, insert: bool, max: u32) -> Op
 }
 
 fn adjust_ref(r: Reference, edit: &Edit) -> Option<Reference> {
+    // A reference into another workbook names cells there; inserting, deleting or moving rows and
+    // columns here moves nothing over there.
+    if matches!(r.sheet, SheetSel::External { .. } | SheetSel::ExternalFile { .. }) {
+        return Some(r);
+    }
     match edit {
         Edit::Insert { axis, at, count } | Edit::Delete { axis, at, count } => {
             let insert = matches!(edit, Edit::Insert { .. });

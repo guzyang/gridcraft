@@ -37,6 +37,12 @@ pub enum SheetSel {
     Named(String),
     /// 3-D span `Sheet1:Sheet3`.
     Span(String, String),
+    /// `[1]Sheet1`: the link's position in the file's `<externalReferences>`.
+    External { link: u32, sheet: String },
+    /// `'[Book2.xlsx]Sheet1'`: a link named by its file. `spec` is the text between the quotes, kept
+    /// so the formula is written back exactly as it was read; `file` is the path or name without the
+    /// brackets, and `sheet` the sheet after them.
+    ExternalFile { spec: String, file: String, sheet: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -303,7 +303,35 @@ impl<'h> Evaluator<'h> {
                 let (i, j) = (wb.sheet_index(a).ok_or(CellError::Ref)?, wb.sheet_index(b).ok_or(CellError::Ref)?);
                 Ok((i.min(j)..=i.max(j)).collect())
             }
+            // Another workbook's sheet has no index here; its cells are read from the link's cache
+            // (see the `External` arm of `Expr::Ref`).
+            SheetSel::External { .. } | SheetSel::ExternalFile { .. } => Err(CellError::Ref),
         }
+    }
+
+    /// A reference into another workbook: the values the link's file caches for those cells. A cell
+    /// the cache does not hold is blank; a link the file does not describe answers `#REF!`.
+    fn external(&mut self, link: u32, sheet: &str, range: RangeRef) -> Ev {
+        let wb = self.host.workbook();
+        if !wb.external_links.iter().any(|l| l.index == link) {
+            return err(CellError::Ref);
+        }
+        let one = |c: CellRef| wb.external_value(link, sheet, c);
+        if range.start == range.end {
+            return Ev::V(one(range.start).unwrap_or(Value::Empty));
+        }
+        let (h, w) = (range.height(), range.width());
+        if (h as u64) * (w as u64) > MAX_CELLS {
+            return err(CellError::Num);
+        }
+        let mut data = Vec::with_capacity((h as usize) * (w as usize));
+        for row in 0..h {
+            for col in 0..w {
+                let cell = CellRef::new(range.start.row + row, range.start.col + col);
+                data.push(one(cell).unwrap_or(Value::Empty));
+            }
+        }
+        Ev::V(Array::new(h as usize, w as usize, data).map(Value::from).unwrap_or(Value::Error(CellError::Value)))
     }
 
     pub fn reference_areas(&self, r: &Reference) -> Result<Vec<Area>, CellError> {
@@ -426,9 +454,19 @@ impl<'h> Evaluator<'h> {
                 }
                 Ev::V(Array::new(h, w, data).map(Value::from).unwrap_or(Value::Error(CellError::Value)))
             }
-            Expr::Ref(r) => match self.reference_areas(r) {
-                Ok(a) => Ev::R(a),
-                Err(x) => err(x),
+            Expr::Ref(r) => match &r.sheet {
+                SheetSel::External { link, sheet } => self.external(*link, sheet, r.range()),
+                // A link named by its file reads the link whose target has that file name.
+                SheetSel::ExternalFile { file, sheet, .. } => {
+                    match self.host.workbook().external_link_named(file) {
+                        Some(link) => self.external(link, sheet, r.range()),
+                        None => err(CellError::Ref),
+                    }
+                }
+                _ => match self.reference_areas(r) {
+                    Ok(a) => Ev::R(a),
+                    Err(x) => err(x),
+                },
             },
             Expr::Name(n) => self.name(n),
             Expr::Struct(s) => self.structured(s),

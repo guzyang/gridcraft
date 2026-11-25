@@ -3,9 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gridcraft_core::{DateSystem, RangeRef};
+use std::collections::BTreeMap;
+
+use gridcraft_core::{CellError, CellRef, DateSystem, RangeRef, Value};
 use gridcraft_model::{
-    CalcMode, CellPicture, DefinedName, PhoneticString, Sheet, ShowObjects, Style, StyleId, StyleTable, Visibility, Workbook, WorkbookView,
+    CalcMode, ExternalLink, CellPicture, DefinedName, PhoneticString, Sheet, ShowObjects, Style, StyleId, StyleTable, Visibility, Workbook, WorkbookView,
 };
 
 use crate::package::{Package, Rel};
@@ -300,6 +302,76 @@ fn selected_workbook_view(workbook: &El) -> Option<&El> {
     views.kids("workbookView").find(|view| view.attr("visibility").unwrap_or("visible") == "visible").or_else(|| views.child("workbookView"))
 }
 
+/// Links to other workbooks: every `<externalReference>` in order (so `[1]` is the first), with the
+/// values its part caches for the cells formulas read. Those values are what Excel shows when the
+/// linked file is not open, and what the `External` arm of `Expr::Ref` answers until it is refreshed.
+fn read_external_links(cx: &mut Ctx, wb_xml: &El, wb_rels: &[Rel]) -> Vec<ExternalLink> {
+    let mut out = Vec::new();
+    let Some(ids) = wb_xml.child("externalReferences") else { return out };
+    // Every slot counts, including one whose reference is missing: `[2]` stays the second.
+    for (i, e) in ids.kids("externalReference").enumerate() {
+        let index = (i + 1) as u32;
+        let Some(id) = e.attr("id") else { continue };
+        let Some(rel) = wb_rels.iter().find(|r| r.id == id) else { continue };
+        let mut link = ExternalLink { index, target: None, values: BTreeMap::new() };
+        // The part names the linked file in its own relationships, as a path or a bare file name.
+        if let Ok(rels) = cx.pkg.rels(&rel.target)
+            && let Some(path) = rels.iter().find(|r| r.kind == "externalLinkPath")
+        {
+            link.target = Some(path.target.clone());
+        }
+        let Ok(Some(x)) = cx.pkg.read_xml(&rel.target) else {
+            out.push(link);
+            continue;
+        };
+        let Some(book) = x.child("externalBook") else {
+            out.push(link);
+            continue;
+        };
+        let names: Vec<String> = book
+            .child("sheetNames")
+            .map(|n| n.kids("sheetName").filter_map(|s| s.attr("val")).map(str::to_string).collect())
+            .unwrap_or_default();
+        if let Some(set) = book.child("sheetDataSet") {
+            for sd in set.kids("sheetData") {
+                let sheet_id = sd.attr_u32("sheetId").unwrap_or(0) as usize;
+                let Some(name) = names.get(sheet_id).cloned() else { continue };
+                let mut cells = BTreeMap::new();
+                for row in sd.kids("row") {
+                    for c in row.kids("cell") {
+                        let (Some(r), Some(v)) = (c.attr("r"), Some(c.child("v").map(|v| v.text.clone()).unwrap_or_default())) else {
+                            continue;
+                        };
+                        if v.is_empty() {
+                            continue;
+                        }
+                        let Some(cell) = CellRef::parse(r) else { continue };
+                        let value = match c.attr("t") {
+                            Some("e") => match CellError::ALL.iter().copied().find(|e| e.as_str().eq_ignore_ascii_case(&v)) {
+                                Some(e) => Value::Error(e),
+                                None => continue,
+                            },
+                            Some("b") => Value::Bool(v.trim() != "0"),
+                            Some("str") => Value::text(v),
+                            // `t="s"` is an index into the other file's shared strings, which the
+                            // cache does not carry; everything else is a number.
+                            Some("s") => continue,
+                            _ => match v.trim().parse::<f64>() {
+                                Ok(n) => Value::Number(n),
+                                Err(_) => Value::text(v),
+                            },
+                        };
+                        cells.insert(cell, value);
+                    }
+                }
+                link.values.insert(name, cells);
+            }
+        }
+        out.push(link);
+    }
+    out
+}
+
 pub fn read_xlsx<'a>(bytes: &'a [u8], opts: crate::ReadOptions<'a>) -> Result<(Workbook, ReadReport), IoError> {
     let functions = opts.functions;
     let known_function = opts.known_function;
@@ -356,6 +428,7 @@ pub fn read_xlsx<'a>(bytes: &'a [u8], opts: crate::ReadOptions<'a>) -> Result<(W
     }
 
     read_workbook_properties(&mut cx, &mut wb, &wb_xml);
+    wb.external_links = read_external_links(&mut cx, &wb_xml, &wb_rels);
     let view_el = selected_workbook_view(&wb_xml);
     let active_tab = view_el.and_then(|v| v.attr_u32("activeTab")).unwrap_or(0) as usize;
     if let Some(v) = view_el {

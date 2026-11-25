@@ -1,9 +1,10 @@
 //! Workbooks.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gridcraft_core::DateSystem;
+use gridcraft_core::{CellRef, DateSystem, Value};
 use gridcraft_formula::Expr;
 use serde::{Deserialize, Serialize};
 
@@ -195,6 +196,28 @@ pub struct PhoneticString {
     pub props: Option<PhoneticProps>,
 }
 
+/// A link to another workbook: the file its formulas read and the values the file caches for the
+/// cells they read, so a formula shows what Excel last saw even when the source is not open.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExternalLink {
+    /// The link's position in the file's `<externalReferences>`, as `[n]` writes it (1-based).
+    pub index: u32,
+    /// The target as `<externalLinkPath>` writes it: a path or a bare file name, possibly relative
+    /// to the workbook that holds the link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The cached values, by sheet name and then cell.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, BTreeMap<CellRef, Value>>,
+}
+
+impl ExternalLink {
+    /// The value the linked workbook's `sheet!cell` had when the file was saved.
+    pub fn value(&self, sheet: &str, cell: CellRef) -> Option<&Value> {
+        self.values.get(sheet)?.get(&cell)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workbook {
     pub sheets: Vec<Arc<Sheet>>,
@@ -237,6 +260,10 @@ pub struct Workbook {
     /// which holds unmodelled parts), so it is saved to JSON as well as to XLSX.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub phonetics: Vec<PhoneticString>,
+    /// Links to other workbooks (`<externalReferences>`): their targets and the values the
+    /// file caches for the cells they read. Empty for a workbook that reads no other file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_links: Vec<ExternalLink>,
     /// VBA project (`xl/vbaProject.bin`) carried through unchanged. GridCraft does not run
     /// macros; the blob is preserved so that saving a macro-enabled workbook never destroys the
     /// macros it arrived with. base64 in JSON. `None` = the workbook has no macros. Shared, so a
@@ -344,6 +371,22 @@ impl std::fmt::Debug for ActiveSheet {
 }
 
 impl Workbook {
+    /// The link a formula names by its file (`'[Book2.xlsx]Sheet1'!A1`): the one whose target ends
+    /// with that file name, if the workbook has it.
+    pub fn external_link_named(&self, file: &str) -> Option<u32> {
+        self.external_links.iter().find_map(|l| {
+            let base = l.target.as_deref()?.rsplit(['\\', '/']).next().unwrap_or_default();
+            base.eq_ignore_ascii_case(file).then_some(l.index)
+        })
+    }
+
+    /// The value another workbook's cell had when the file was saved, from the link's cached
+    /// values. `None` for a link or a cell the file does not cache.
+    pub fn external_value(&self, link: u32, sheet: &str, cell: CellRef) -> Option<Value> {
+        let l = self.external_links.iter().find(|l| l.index == link)?;
+        l.value(sheet, cell).cloned()
+    }
+
     /// A new workbook with one sheet, "Sheet1".
     pub fn new() -> Workbook {
         Workbook {
@@ -363,6 +406,7 @@ impl Workbook {
             custom_lists: vec![],
             cell_styles: vec![],
             phonetics: vec![],
+            external_links: vec![],
             vba_project: None,
             csv_delimiter: None,
             macros: crate::macros::Macros::default(),

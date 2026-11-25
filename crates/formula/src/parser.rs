@@ -167,6 +167,25 @@ pub fn normalize_function_name(name: &str) -> String {
     }
 }
 
+/// The sheet selector for an external qualifier: `[1]` is the link's index in the file's
+/// `<externalReferences>`; anything else names the workbook (`[Book2.xlsx]`, `C:\dir\[Book2.xlsx]`).
+fn external_sheet_sel(spec: &str, sheet: String) -> SheetSel {
+    if let Some(open) = spec.rfind('[')
+        && let Some(close_rel) = spec.get(open..).and_then(|s| s.find(']'))
+    {
+        let close = open + close_rel;
+        let name = spec.get(open + 1..close).unwrap_or_default();
+        if open == 0
+            && let Ok(link) = name.parse::<u32>()
+        {
+            return SheetSel::External { link, sheet };
+        }
+        let file = format!("{}{name}", spec.get(..open).unwrap_or_default());
+        return SheetSel::ExternalFile { spec: spec.to_string(), file, sheet };
+    }
+    SheetSel::ExternalFile { spec: spec.to_string(), file: spec.to_string(), sheet }
+}
+
 impl Parser {
     fn peek(&self) -> &Tok {
         self.toks.get(self.i).map(|t| &t.tok).unwrap_or(&Tok::Eof)
@@ -351,6 +370,18 @@ impl Parser {
                     return Ok(Expr::Unary(UnOp::Trim(mode), Box::new(x)));
                 }
                 Ok(Expr::Call(name, args))
+            }
+            Tok::External(spec) => {
+                let name = match self.next() {
+                    Tok::Sheet(name, None) => name,
+                    t => return Err(self.err(format!("expected a sheet name after the workbook, found {}", describe(&t)))),
+                };
+                let sheet = external_sheet_sel(&spec, name);
+                match self.next() {
+                    Tok::Word(w) => self.reference_from_word(sheet, &w),
+                    Tok::Error(CellError::Ref) => Ok(Expr::Error(CellError::Ref)),
+                    t => Err(self.err(format!("expected a reference after the sheet name, found {}", describe(&t)))),
+                }
             }
             Tok::Sheet(a, b) => {
                 let sheet = match b {

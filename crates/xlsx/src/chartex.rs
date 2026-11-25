@@ -200,7 +200,7 @@ fn ref_range(wb: &Workbook, si: usize, f: &str) -> Option<(usize, RangeRef)> {
     let sheet = match &r.sheet {
         SheetSel::Current => si,
         SheetSel::Named(n) => wb.sheet_index(n)?,
-        SheetSel::Span(..) => return None,
+        SheetSel::Span(..) | SheetSel::External { .. } | SheetSel::ExternalFile { .. } => return None,
     };
     Some((sheet, r.range()))
 }

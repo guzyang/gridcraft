@@ -17,6 +17,10 @@ pub enum Tok {
     Word(String),
     /// Sheet prefix `Sheet1!`, `'My Sheet'!`, `Sheet1:Sheet3!` (first, last).
     Sheet(String, Option<String>),
+    /// External-workbook prefix in front of a sheet: the raw text inside its brackets, `[1]` or
+    /// `[Book2.xlsx]`, as written. For the quoted form it is the whole text between the quotes
+    /// (`[Book2.xlsx]Sheet1`, `C:\dir\[Book2.xlsx]Sheet1`).
+    External(String),
     /// Function name (word immediately followed by `(`), the `(` is consumed.
     Func(String),
     /// Structured reference body after a table name or bare: the raw text inside `[...]`.
@@ -110,12 +114,58 @@ fn quoted(src: &str, chars: &[(usize, char)], i: usize, start: usize, out: &mut 
     if char_at(chars, j) != Some('!') {
         return Err(LexError { msg: "expected ! after sheet name".into(), pos: byte_pos(src, chars, j) });
     }
+    // `'[Book2.xlsx]Sheet1'!` or `'C:\dir\[Book2.xlsx]Sheet1'!`: the brackets name another
+    // workbook, the text after them its sheet.
+    if let Some((spec, sheet)) = split_external(&value) {
+        emit(src, chars, out, Tok::External(spec), start, j);
+        emit(src, chars, out, Tok::Sheet(sheet, None), start, j + 1);
+        return Ok(j + 1);
+    }
     let (first, last) = match value.split_once(':') {
         Some((first, last)) => (first.to_string(), Some(last.to_string())),
         None => (value, None),
     };
     emit(src, chars, out, Tok::Sheet(first, last), start, j + 1);
     Ok(j + 1)
+}
+
+/// Splits a quoted sheet qualifier that names another workbook: `[Book2.xlsx]Sheet1` and
+/// `C:\dir\[Book2.xlsx]Sheet1` → the text up to and including `]`, and the sheet after it.
+fn split_external(value: &str) -> Option<(String, String)> {
+    let open = value.rfind('[')?;
+    let close = open + value.get(open..)?.find(']')?;
+    let sheet = value.get(close + 1..)?;
+    if sheet.is_empty() {
+        return None;
+    }
+    // The whole text between the quotes, so the formula is printed back as it was read.
+    Some((value.to_string(), sheet.to_string()))
+}
+
+/// `[1]Sheet1!` written without quotes: the file's link index and a simple sheet name.
+fn external_index(src: &str, chars: &[(usize, char)], i: usize, start: usize, out: &mut Vec<Token>) -> Option<usize> {
+    let mut j = i + 1;
+    let digits = j;
+    while char_at(chars, j).is_some_and(|c| c.is_ascii_digit()) {
+        j += 1;
+    }
+    if j == digits || char_at(chars, j) != Some(']') {
+        return None;
+    }
+    let inner = src.get(byte_pos(src, chars, digits)..byte_pos(src, chars, j))?;
+    let spec = format!("[{inner}]");
+    j += 1;
+    let name_start = j;
+    while char_at(chars, j).is_some_and(|c| is_word_char(c) && !matches!(c, ':' | '[' | ']' | '!')) {
+        j += 1;
+    }
+    if j == name_start || char_at(chars, j) != Some('!') {
+        return None;
+    }
+    let sheet = src.get(byte_pos(src, chars, name_start)..byte_pos(src, chars, j))?.to_string();
+    emit(src, chars, out, Tok::External(spec), start, j);
+    emit(src, chars, out, Tok::Sheet(sheet, None), start, j + 1);
+    Some(j + 1)
 }
 
 fn error_literal(src: &str, chars: &[(usize, char)], i: usize, start: usize, out: &mut Vec<Token>) -> Result<usize, LexError> {
@@ -296,7 +346,10 @@ pub fn tokenize_locale(src: &str, locale: crate::FormulaLocale) -> Result<Vec<To
                 i = error_literal(src, &chars, i, start, &mut out)?;
             }
             '[' => {
-                i = structured_ref(src, &chars, i, start, &mut out)?;
+                i = match external_index(src, &chars, i, start, &mut out) {
+                    Some(j) => j,
+                    None => structured_ref(src, &chars, i, start, &mut out)?,
+                };
             }
             '.' if ch(i + 1) == Some(':') => {
                 // Trim reference `A1.:E10` / `A1.:.E10` (the word before stopped at the dot).

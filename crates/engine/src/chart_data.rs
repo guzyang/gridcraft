@@ -69,7 +69,7 @@ fn block(wb: &Workbook, home: usize, text: &str) -> Option<(usize, RangeRef)> {
     let sheet = match &r.sheet {
         SheetSel::Current => home,
         SheetSel::Named(n) => wb.sheet_index(n)?,
-        SheetSel::Span(..) => return None,
+        SheetSel::Span(..) | SheetSel::External { .. } | SheetSel::ExternalFile { .. } => return None,
     };
     matches!(r.kind, RefKind::Cell(_) | RefKind::Range(..)).then(|| (sheet, r.range()))
 }
