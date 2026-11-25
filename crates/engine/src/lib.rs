@@ -16,6 +16,7 @@ pub mod cmd;
 pub mod display;
 pub mod fill;
 pub mod io;
+pub mod external_links;
 pub mod links;
 pub mod macros;
 pub mod outline;

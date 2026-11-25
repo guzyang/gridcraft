@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use gridcraft_model::{BorderLine, BorderStyle, Color};
+
 /// The formatting one cell carries in the clipboard's HTML. Every part is optional: what the
 /// markup does not say stays as the destination has it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -26,6 +28,18 @@ pub(crate) struct HtmlStyle {
     pub align: Option<String>,
     /// The number format the source cell showed, when the markup names one.
     pub num_fmt: Option<String>,
+    /// The borders the markup draws around the cell.
+    pub borders: Option<HtmlBorders>,
+}
+
+/// The borders one cell carries in the clipboard's HTML: each side is optional, and a side the
+/// markup does not mention keeps the border the destination had.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct HtmlBorders {
+    pub left: Option<BorderLine>,
+    pub right: Option<BorderLine>,
+    pub top: Option<BorderLine>,
+    pub bottom: Option<BorderLine>,
 }
 
 /// The declarations each class in the markup's `<style>` blocks carries, by class name.
@@ -67,6 +81,8 @@ pub(crate) fn cell_style(attrs: &str, classes: &HashMap<String, Vec<(String, Str
 /// The formatting the declarations describe.
 fn style_from_decls(decls: &[(String, String)]) -> HtmlStyle {
     let mut style = HtmlStyle::default();
+    // One entry per side, in the order `SIDES` names them.
+    let mut sides = [Side::default(); 4];
     for (prop, value) in decls {
         match prop.as_str() {
             "font-weight" => {
@@ -95,10 +111,228 @@ fn style_from_decls(decls: &[(String, String)]) -> HtmlStyle {
                     style.align = Some(v);
                 }
             }
-            _ => {}
+            _ => {
+                if let Some(decl) = border_declaration(prop, value) {
+                    for &side in &decl.sides {
+                        decl.merge(&mut sides[side]);
+                    }
+                }
+            }
         }
     }
+    let borders = HtmlBorders { left: sides[0].line(), right: sides[1].line(), top: sides[2].line(), bottom: sides[3].line() };
+    if borders != HtmlBorders::default() {
+        style.borders = Some(borders);
+    }
     style
+}
+
+/// The four sides of a cell, in the order the border declarations name them.
+const SIDES: [&str; 4] = ["left", "right", "top", "bottom"];
+
+/// What a border declaration says about the sides it covers.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct BorderDecl {
+    /// The sides the declaration covers.
+    sides: Vec<usize>,
+    /// Which part of the border it speaks about: the whole border, or only its style, width
+    /// or colour.
+    part: Option<&'static str>,
+    style: Option<BorderStyle>,
+    width: Option<f32>,
+    color: Option<u32>,
+}
+
+impl BorderDecl {
+    /// The declaration's own parts, taken over the side's own.
+    fn merge(&self, side: &mut Side) {
+        if let Some(s) = self.style {
+            side.style = Some(s);
+        }
+        if let Some(w) = self.width {
+            side.width = Some(w);
+        }
+        if let Some(c) = self.color {
+            side.color = Some(c);
+        }
+    }
+}
+
+/// One side's border, as the declarations build it up.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Side {
+    style: Option<BorderStyle>,
+    width: Option<f32>,
+    color: Option<u32>,
+}
+
+impl Side {
+    /// The border line this side ends up with: `None` when no declaration spoke about it.
+    fn line(&self) -> Option<BorderLine> {
+        // A width alone (`border-width: 2px`) draws a line of that thickness; nothing said about
+        // this side means the destination keeps the border it had.
+        let style = self.style.or_else(|| self.width.map(thickness))?;
+        let color = self.color.map_or(Color::Auto, Color::Rgb);
+        Some(BorderLine { style, color })
+    }
+}
+
+/// The model's line style for a line of that thickness.
+fn thickness(width: f32) -> BorderStyle {
+    if width <= 0.0 {
+        BorderStyle::None
+    } else if width >= 2.5 {
+        BorderStyle::Thick
+    } else if width >= 1.5 {
+        BorderStyle::Medium
+    } else {
+        BorderStyle::Thin
+    }
+}
+
+/// A border declaration (`border`, `border-top`, `border-style`, `border-top-color`, …): the sides
+/// it covers and what it says about them. `None` when the property is not a border one.
+fn border_declaration(prop: &str, value: &str) -> Option<BorderDecl> {
+    let mut decl = match prop {
+        "border" => BorderDecl { sides: (0..4).collect(), ..BorderDecl::default() },
+        "border-style" => BorderDecl { sides: (0..4).collect(), part: Some("style"), ..BorderDecl::default() },
+        "border-width" => BorderDecl { sides: (0..4).collect(), part: Some("width"), ..BorderDecl::default() },
+        "border-color" => BorderDecl { sides: (0..4).collect(), part: Some("color"), ..BorderDecl::default() },
+        _ => {
+            let rest = prop.strip_prefix("border-")?;
+            let (side, part) = rest.split_once('-').unwrap_or((rest, ""));
+            let index = SIDES.iter().position(|s| *s == side)?;
+            let part = match part {
+                "" => None,
+                "style" => Some("style"),
+                "width" => Some("width"),
+                "color" => Some("color"),
+                _ => return None,
+            };
+            BorderDecl { sides: vec![index], part, ..BorderDecl::default() }
+        }
+    };
+    let v = value.trim().to_ascii_lowercase();
+    if v.is_empty() {
+        return None;
+    }
+    // A shorthand names the line style, the width and the colour at once, in any order.
+    let mut keyword = None;
+    let mut width = None;
+    let mut color = None;
+    for part in border_words(&v) {
+        if let Some(s) = border_keyword(&part) {
+            keyword = Some(s);
+        } else if let Some(w) = border_width(&part) {
+            width = Some(w);
+        } else if let Some(c) = css_color(&part) {
+            color = Some(c);
+        }
+    }
+    match decl.part {
+        Some("style") => decl.style = keyword.map(|k| k.style(width)),
+        Some("width") => decl.width = width,
+        Some("color") => decl.color = color,
+        _ => {
+            decl.style = keyword.map(|k| k.style(width));
+            decl.width = width;
+            decl.color = color;
+        }
+    }
+    // A width alone (`border-width: 2px`) draws a line of that thickness: the side keeps no
+    // style of its own and `Side::line` derives it from the width.
+    Some(decl)
+}
+
+/// The words of a border value: `rgb(0, 0, 0)` is one word (a space-separated split would
+/// break it apart), the rest are separated by spaces.
+fn border_words(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut in_parens = false;
+    for c in value.chars() {
+        match c {
+            '(' => {
+                in_parens = true;
+                word.push(c);
+            }
+            ')' => {
+                in_parens = false;
+                word.push(c);
+            }
+            c if c.is_whitespace() && !in_parens => {
+                if !word.is_empty() {
+                    out.push(std::mem::take(&mut word));
+                }
+            }
+            c => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
+/// The line style a CSS border keyword names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BorderKeyword {
+    None,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Other,
+}
+
+impl BorderKeyword {
+    /// The model's line style for this keyword; a solid line's thickness follows the width.
+    fn style(self, width: Option<f32>) -> BorderStyle {
+        match self {
+            BorderKeyword::None => BorderStyle::None,
+            BorderKeyword::Dashed => BorderStyle::Dashed,
+            BorderKeyword::Dotted => BorderStyle::Dotted,
+            BorderKeyword::Double => BorderStyle::Double,
+            BorderKeyword::Solid | BorderKeyword::Other => match width {
+                Some(w) if w >= 2.5 => BorderStyle::Thick,
+                Some(w) if w >= 1.5 => BorderStyle::Medium,
+                _ => BorderStyle::Thin,
+            },
+        }
+    }
+}
+
+/// The border keyword a CSS value names, if any.
+fn border_keyword(value: &str) -> Option<BorderKeyword> {
+    Some(match value.to_ascii_lowercase().as_str() {
+        "none" | "hidden" => BorderKeyword::None,
+        "solid" => BorderKeyword::Solid,
+        "dashed" => BorderKeyword::Dashed,
+        "dotted" => BorderKeyword::Dotted,
+        "double" => BorderKeyword::Double,
+        "groove" | "ridge" | "inset" | "outset" => BorderKeyword::Other,
+        _ => return None,
+    })
+}
+
+/// A border width in CSS: `1px`, `0.5pt`, `thin`, `medium`, `thick`.
+fn border_width(value: &str) -> Option<f32> {
+    let v = value.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "thin" => return Some(1.0),
+        "medium" => return Some(2.0),
+        "thick" => return Some(3.0),
+        _ => {}
+    }
+    let (num, unit) = v.split_at(v.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(v.len()));
+    let n: f32 = num.parse().ok()?;
+    match unit.trim() {
+        "px" => Some(n),
+        "pt" => Some(n * 4.0 / 3.0),
+        "em" | "rem" => Some(n * 12.0),
+        "" => Some(n),
+        _ => None,
+    }
 }
 
 /// The rules in a `<style>` block: each selector's declarations, filed under the class names the
@@ -363,5 +597,56 @@ td.xl65{font-weight:bold;font-size:11.0pt;color:rgb(0,0,255);background-color:#D
         assert_eq!(first_family("\"Calibri\",Arial").as_deref(), Some("Calibri"));
         assert_eq!(first_family("宋体").as_deref(), Some("宋体"));
     }
-}
 
+    #[test]
+    fn a_border_shorthand_draws_the_four_sides() {
+        // `border: 1px solid #000` is a line on each of the four sides.
+        let style = cell_style(r#"style="border:1px solid #000""#, &HashMap::new()).expect("a style");
+        let borders = style.borders.as_ref().expect("borders");
+        for side in [borders.left, borders.right, borders.top, borders.bottom] {
+            let side = side.expect("a side");
+            assert_eq!(side.style, BorderStyle::Thin);
+            assert_eq!(side.color, Color::Rgb(0x000000));
+        }
+    }
+
+    #[test]
+    fn a_border_on_one_side_only_leaves_the_others_alone() {
+        // `border-top` names the top side alone; the other three keep the destination's borders.
+        let style = cell_style(r#"style="border-top:2px dashed #ff0000""#, &HashMap::new()).expect("a style");
+        let borders = style.borders.as_ref().expect("borders");
+        assert_eq!(borders.top, Some(BorderLine { style: BorderStyle::Dashed, color: Color::Rgb(0xFF0000) }));
+        assert_eq!(borders.left, None);
+        assert_eq!(borders.right, None);
+        assert_eq!(borders.bottom, None);
+    }
+
+    #[test]
+    fn a_border_in_a_class_is_read_too() {
+        // Excel puts the borders in the class its `<style>` block defines.
+        let html = r#"<style>td.xl65{border:1px solid #808080;border-left:3px solid red}</style><table><tr><td class="xl65">x</td></tr></table>"#;
+        let classes = css_classes(html);
+        let style = cell_style(r#"class="xl65""#, &classes).expect("a style");
+        let borders = style.borders.as_ref().expect("borders");
+        assert_eq!(borders.top, Some(BorderLine { style: BorderStyle::Thin, color: Color::Rgb(0x808080) }));
+        assert_eq!(borders.left, Some(BorderLine { style: BorderStyle::Thick, color: Color::Rgb(0xFF0000) }));
+        assert_eq!(borders.right, Some(BorderLine { style: BorderStyle::Thin, color: Color::Rgb(0x808080) }));
+    }
+
+    #[test]
+    fn the_thickness_of_a_border_line_follows_its_width() {
+        let style = cell_style(r#"style="border:1px solid #000;border-bottom:4px double #000""#, &HashMap::new()).expect("a style");
+        let borders = style.borders.as_ref().expect("borders");
+        assert_eq!(borders.top.map(|b| b.style), Some(BorderStyle::Thin));
+        assert_eq!(borders.bottom.map(|b| b.style), Some(BorderStyle::Double));
+        // A colour without spaces stays one word, so `rgb(0, 0, 0)` is read whole.
+        let style = cell_style(r#"style="border:1px solid rgb(0, 0, 0)""#, &HashMap::new()).expect("a style");
+        assert_eq!(style.borders.and_then(|b| b.top).map(|b| b.color), Some(Color::Rgb(0x000000)));
+    }
+
+    #[test]
+    fn a_cell_without_borders_has_none() {
+        assert!(cell_style(r#"style="font-weight:bold""#, &HashMap::new()).expect("a style").borders.is_none());
+        assert!(cell_style("", &HashMap::new()).is_none());
+    }
+}

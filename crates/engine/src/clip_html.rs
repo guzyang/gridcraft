@@ -28,15 +28,43 @@ pub(crate) struct HtmlCell {
     pub style: Option<crate::clip_style::HtmlStyle>,
 }
 
+/// A merged area of the source table: the anchor cell's place in the pasted grid, and how far
+/// the area reaches. A `colspan`/`rowspan` in the markup is such an area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HtmlMerge {
+    /// The anchor cell's row in the pasted grid (0-based).
+    pub row: usize,
+    /// The anchor cell's column in the pasted grid (0-based).
+    pub col: usize,
+    pub rowspan: usize,
+    pub colspan: usize,
+}
+
+/// The cells of a clipboard HTML table, and the merged areas among them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct HtmlTable {
+    /// The cells, row by row.
+    pub rows: Vec<Vec<HtmlCell>>,
+    /// The merged areas, in the grid's own coordinates.
+    pub merges: Vec<HtmlMerge>,
+}
+
 /// The cells of the first table in `html`, row by row, read no further than `max_rows` rows of
 /// `max_cols` cells (the pasted text's shape, itself clamped to the sheet) and [`MAX_HTML_CELLS`]
 /// in all. A cell spanning columns is followed by empty cells, and a column covered by a `rowspan`
 /// from above holds an empty cell, so positions line up with the tab-separated text. Empty when
 /// there is no table.
 pub(crate) fn table_cells(html: &str, max_rows: usize, max_cols: usize) -> Vec<Vec<HtmlCell>> {
+    table_with_merges(html, max_rows, max_cols).rows
+}
+
+/// The cells of the first table in `html`, and the merged areas its `colspan`/`rowspan`
+/// attributes describe. The areas are given in the grid's coordinates: the anchor cell's place
+/// and how many rows and columns the area covers.
+pub(crate) fn table_with_merges(html: &str, max_rows: usize, max_cols: usize) -> HtmlTable {
     let mut grid = Grid::new(max_rows, max_cols);
     if html.len() > MAX_HTML {
-        return grid.rows;
+        return HtmlTable { rows: grid.rows, merges: Vec::new() };
     }
     // The classes the markup's `<style>` block defines, read once for the whole paste.
     let classes = crate::clip_style::css_classes(html);
@@ -95,7 +123,7 @@ pub(crate) fn table_cells(html: &str, max_rows: usize, max_cols: usize) -> Vec<V
                 let colspan = span(attrs, "colspan", MAX_SPAN);
                 let rowspan = span(attrs, "rowspan", MAX_ROW_SPAN);
                 let style = crate::clip_style::cell_style(attrs, &classes);
-                cell = Some(OpenCell { cell: HtmlCell { text: String::new(), num, header: name == "th", style }, colspan, rowspan });
+                cell = Some(OpenCell { cell: HtmlCell { text: String::new(), num, header: name == "th", style }, colspan, rowspan, run_bold: false });
             }
             ("td" | "th", true) | ("tr", true) => grid.finish(&mut cell),
             ("br", _) => {
@@ -103,11 +131,26 @@ pub(crate) fn table_cells(html: &str, max_rows: usize, max_cols: usize) -> Vec<V
                     c.cell.text.push(' ');
                 }
             }
+            // A run inside the cell that carries its own bold: the whole cell is taken as bold
+            // (the model has no runs, so this is an approximation — see `OpenCell::run_bold`).
+            ("b" | "strong", false) => {
+                if let Some(c) = cell.as_mut() {
+                    c.run_bold = true;
+                }
+            }
+            ("span", false) => {
+                if let Some(c) = cell.as_mut()
+                    && let Some(style) = crate::clip_style::cell_style(attrs, &classes)
+                    && style.bold == Some(true)
+                {
+                    c.run_bold = true;
+                }
+            }
             _ => {}
         }
     }
     grid.finish(&mut cell);
-    grid.rows
+    HtmlTable { rows: grid.rows, merges: grid.merges }
 }
 
 /// A `colspan`/`rowspan` attribute: at least 1, at most `max` (the sheet's extent), so a hostile
@@ -121,6 +164,10 @@ struct OpenCell {
     cell: HtmlCell,
     colspan: usize,
     rowspan: usize,
+    /// Whether a run inside the cell carried its own bold. The model has no runs, so a cell
+    /// with such a run is taken as bold as a whole: an approximation, but the run's bold is
+    /// what the reader sees.
+    run_bold: bool,
 }
 
 /// The table being read, with its size limits.
@@ -132,6 +179,8 @@ struct Grid {
     budget: usize,
     /// Per column: the row index (exclusive) down to which a `rowspan` from above covers it.
     covered_until: Vec<usize>,
+    /// The merged areas the markup describes, in the grid's coordinates.
+    merges: Vec<HtmlMerge>,
     /// The row or cell budget ran out: nothing more is read.
     full: bool,
 }
@@ -141,7 +190,7 @@ impl Grid {
         let max_rows = max_rows.min(MAX_ROW_SPAN);
         let max_cols = max_cols.min(MAX_SPAN);
         let budget = MAX_HTML_CELLS.min(max_rows.saturating_mul(max_cols));
-        Grid { rows: Vec::new(), max_rows, max_cols, budget, covered_until: Vec::new(), full: false }
+        Grid { rows: Vec::new(), max_rows, max_cols, budget, covered_until: Vec::new(), merges: Vec::new(), full: false }
     }
 
     /// Opens a new row, or marks the grid full when the pasted text has no more rows.
@@ -171,7 +220,7 @@ impl Grid {
     /// Closes the open cell (if any) into the current row, decoding its text: first past the
     /// columns a `rowspan` above still covers, then the cell, then a placeholder per extra column.
     fn finish(&mut self, open: &mut Option<OpenCell>) {
-        let Some(OpenCell { mut cell, colspan, rowspan }) = open.take() else { return };
+        let Some(OpenCell { mut cell, colspan, rowspan, run_bold }) = open.take() else { return };
         if self.rows.is_empty() {
             self.start_row();
         }
@@ -183,6 +232,11 @@ impl Grid {
         }
         let start = self.col();
         cell.text = decode(&cell.text);
+        if run_bold {
+            // The model has no runs inside a cell, so a cell with a bold run is taken as bold as
+            // a whole: an approximation of what the source shows.
+            cell.style.get_or_insert_with(Default::default).bold = Some(true);
+        }
         if !self.push(cell) {
             return;
         }
@@ -199,6 +253,10 @@ impl Grid {
             for u in self.covered_until.get_mut(start..end).into_iter().flatten() {
                 *u = (*u).max(until);
             }
+        }
+        if colspan > 1 || rowspan > 1 {
+            // The merged area the cell opens: its anchor's place and how far it reaches.
+            self.merges.push(HtmlMerge { row: r, col: start, rowspan, colspan });
         }
     }
 
@@ -462,6 +520,39 @@ mod tests {
         assert_eq!((rows[1][0].clone(), rows[1][1].clone()), (HtmlCell::default(), HtmlCell::default()));
         assert_eq!(rows[1][2].num, Some(2.0));
         assert_eq!(rows[2][0].num, Some(3.0), "the span ends after its second row");
+    }
+
+    #[test]
+    fn the_spans_in_the_markup_are_read_as_merged_areas() {
+        // A `colspan`/`rowspan` is a merged area: the anchor cell's place and how far it reaches.
+        let html = r#"<table><tr><td colspan=2 rowspan=2>Merged</td><td>c</td></tr>
+            <tr><td>d</td></tr><tr><td>e</td><td>f</td><td>g</td></tr></table>"#;
+        let table = table_with_merges(html, 3, 3);
+        assert_eq!(table.merges, vec![HtmlMerge { row: 0, col: 0, rowspan: 2, colspan: 2 }]);
+        assert_eq!(table.rows[0][0].text, "Merged");
+
+        // A cell that spans nothing is no merged area.
+        let table = table_with_merges("<table><tr><td>a</td><td>b</td></tr></table>", 2, 2);
+        assert!(table.merges.is_empty(), "a plain cell is no merged area: {:?}", table.merges);
+    }
+
+    #[test]
+    fn a_bold_run_inside_a_cell_makes_the_cell_bold() {
+        // The model has no runs inside a cell, so a cell with a bold run is taken as bold as a
+        // whole: an approximation, but the run's bold is what the reader sees.
+        let html = "<table><tr><td><b>bold</b></td><td>plain</td></tr></table>";
+        let rows = table_cells(html, 1, 2);
+        assert_eq!(rows[0][0].style.as_ref().and_then(|s| s.bold), Some(true), "the bold run makes the cell bold");
+        assert_eq!(rows[0][1].style, None, "a cell without a bold run stays as it is");
+
+        // The same through a span that carries the bold itself.
+        let html = r#"<table><tr><td><span style="font-weight:bold">bold</span></td></tr></table>"#;
+        assert_eq!(table_cells(html, 1, 1)[0][0].style.as_ref().and_then(|s| s.bold), Some(true));
+
+        // A cell-level bold is not lost when the cell also holds a run.
+        let html = r#"<style>.xl65{font-weight:bold}</style><table><tr><td class="xl65"><b>x</b></td></tr></table>"#;
+        let rows = table_cells(html, 1, 1);
+        assert_eq!(rows[0][0].style.as_ref().and_then(|s| s.bold), Some(true), "the cell keeps its bold");
     }
 
     #[test]

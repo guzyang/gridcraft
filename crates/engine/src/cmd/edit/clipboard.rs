@@ -314,20 +314,24 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
     let rows: Vec<Vec<String>> = parse_tsv(text);
     let h = rows.len();
     let w = rows.iter().map(Vec::len).max().unwrap_or(0);
-    // The HTML flavour, when the host passed it: the number behind each cell's shown text. Read
-    // only as far as the text's own shape, so spans in the markup can't expand without bound.
-    let html = str_param(p, "html").map(|html| crate::clip_html::table_cells(html, h, w)).unwrap_or_default();
+    // The HTML flavour, when the host passed it: the number behind each cell's shown text, the
+    // formatting the source cell had and the merged areas it opened. Read only as far as the
+    // text's own shape, so spans in the markup can't expand without bound.
+    let html = str_param(p, "html").map(|html| crate::clip_html::table_with_merges(html, h, w)).unwrap_or_default();
+    // The merged areas, in the destination's coordinates: the anchor cell's place and how far the
+    // area reaches, cut to the area the paste actually writes.
+    let merges = html_merges(&html, at, &rows);
     edit(s, |cx| {
         for (ri, row) in rows.iter().enumerate() {
             for (ci, v) in row.iter().enumerate() {
                 let Some(c) = at.offset(ri as i64, ci as i64) else { continue };
                 let mut cell = input_to_cell(v, sheet, c, &mut cx.wb).unwrap_or_else(|_| Some(Cell::value(Value::text(v.as_str()))));
                 if let Some(cl) = cell.as_mut() {
-                    numeric_from_html(cl, v, html.get(ri).and_then(|r| r.get(ci)), &mut cx.wb);
+                    numeric_from_html(cl, v, html.rows.get(ri).and_then(|r| r.get(ci)), &mut cx.wb);
                 }
                 // The formatting the source cell had, so a paste from Excel keeps its bold,
                 // underline, colours and font instead of dropping them (#4571).
-                if let (Some(cl), Some(hc)) = (cell.as_mut(), html.get(ri).and_then(|r| r.get(ci)))
+                if let (Some(cl), Some(hc)) = (cell.as_mut(), html.rows.get(ri).and_then(|r| r.get(ci)))
                     && let Some(style) = hc.style.as_ref()
                 {
                     apply_html_style(cl, style, &mut cx.wb);
@@ -342,6 +346,27 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
                 cx.touch(sheet, c);
             }
         }
+        // The merged areas of the source table, made in the destination: the anchor cell keeps
+        // the content, the rest of the area is empty.
+        for m in &merges {
+            let covered: Vec<CellRef> = m.iter().filter(|c| *c != m.start).collect();
+            {
+                let sh = cx.sheet_mut(sheet)?;
+                // A merge that overlaps an existing one replaces it.
+                sh.merges.retain(|x| !x.intersects(m));
+                sh.merges.push(*m);
+                for c in &covered {
+                    if let Some(mut cell) = sh.cells.get(*c).cloned() {
+                        cell.clear_content();
+                        sh.set_cell(*c, cell);
+                    }
+                }
+            }
+            for c in covered {
+                cx.touch(sheet, c);
+            }
+            cx.touch(sheet, m.start);
+        }
         if h > 0 && w > 0 {
             let end = at.offset_clamped(h as i64 - 1, w as i64 - 1);
             *cx.sel = crate::Selection { active: at, anchor: at, ranges: vec![RangeRef::new(at, end)] };
@@ -351,9 +376,61 @@ fn paste_text(s: &mut Session, p: &Json, text: &str) -> Result<Json> {
     Ok(json!({"rows": h, "cols": w}))
 }
 
+/// The merged areas of the source table, in the destination's coordinates: where the anchor cell
+/// lands and how far the area reaches.
+///
+/// The area is cut to what the paste writes: the text's own shape, and the cells the markup
+/// leaves empty. A cell the text fills is not covered by the area (the markup and the text
+/// disagree about it), so the area stops there: the content of the destination is never swallowed
+/// by a merge the source does not describe. An area that ends up a single cell is no merge at all.
+fn html_merges(table: &crate::clip_html::HtmlTable, at: CellRef, rows: &[Vec<String>]) -> Vec<RangeRef> {
+    let mut out = Vec::new();
+    for m in &table.merges {
+        // The anchor cell must be one the paste writes, and the markup must agree with the text
+        // about it (the markup of another copy would place the area wrongly).
+        let Some(anchor_row) = rows.get(m.row) else { continue };
+        let Some(anchor_field) = anchor_row.get(m.col) else { continue };
+        let Some(anchor_cell) = table.rows.get(m.row).and_then(|r| r.get(m.col)) else { continue };
+        if crate::clip_html::normalized(&anchor_cell.text) != crate::clip_html::normalized(anchor_field) {
+            continue;
+        }
+        let mut width = m.colspan;
+        let mut height = m.rowspan;
+        // The area never reaches past what the paste writes: the text's own shape bounds it.
+        width = width.min(anchor_row.len().saturating_sub(m.col));
+        height = height.min(rows.len().saturating_sub(m.row));
+        // The area covers only the cells the markup leaves empty: a cell the text fills is not
+        // part of the area (the markup and the text disagree about it), and the area stops there,
+        // so the content of the destination is never swallowed by a merge the source does not
+        // describe.
+        loop {
+            let blocked = (m.row..m.row + height)
+                .flat_map(|r| (m.col..m.col + width).map(move |c| (r, c)))
+                .find(|&(r, c)| (r, c) != (m.row, m.col) && !rows.get(r).and_then(|row| row.get(c)).is_some_and(|f| f.trim().is_empty()));
+            let Some((r, c)) = blocked else { break };
+            if c > m.col {
+                width = c - m.col;
+            } else {
+                height = r - m.row;
+            }
+            if width <= 1 && height <= 1 {
+                break;
+            }
+        }
+        if width <= 1 && height <= 1 {
+            continue;
+        }
+        let Some(anchor) = at.offset(m.row as i64, m.col as i64) else { continue };
+        let Some(end) = anchor.offset(height as i64 - 1, width as i64 - 1) else { continue };
+        out.push(RangeRef::new(anchor, end));
+    }
+    out
+}
+
 /// A pasted cell takes the formatting the source cell had, as the clipboard's HTML states it: the
-/// bold, italic and underline, the font's colour and face, the cell's background colour and the
-/// text's alignment. What the markup does not state stays as the destination had it.
+/// bold, italic and underline, the font's colour and face, the cell's background colour, the
+/// borders around it and the text's alignment. What the markup does not state stays as the
+/// destination had it.
 fn apply_html_style(cell: &mut Cell, style: &crate::clip_style::HtmlStyle, wb: &mut gridcraft_model::Workbook) {
     let base = cell.style;
     let id = wb.styles.derive(base, |st| {
@@ -391,6 +468,22 @@ fn apply_html_style(cell: &mut Cell, style: &crate::clip_style::HtmlStyle, wb: &
             && fmt != "General"
         {
             st.num_fmt = gridcraft_model::NumFmt::new(fmt);
+        }
+        // The borders the markup draws around the cell: each side the markup names replaces the
+        // destination's own border on that side; a side it does not name keeps it.
+        if let Some(borders) = style.borders.as_ref() {
+            if let Some(line) = borders.left {
+                st.borders.left = line;
+            }
+            if let Some(line) = borders.right {
+                st.borders.right = line;
+            }
+            if let Some(line) = borders.top {
+                st.borders.top = line;
+            }
+            if let Some(line) = borders.bottom {
+                st.borders.bottom = line;
+            }
         }
     });
     cell.style = id;

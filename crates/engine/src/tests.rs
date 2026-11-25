@@ -148,6 +148,61 @@ td.xl70{text-decoration:underline;font-family:"SimSun"}
 }
 
 #[test]
+fn a_paste_from_excel_keeps_the_merged_areas() {
+    // The clipboard's HTML says a cell spans two columns and two rows: the paste makes the same
+    // merged area in the destination, with the content in its top-left cell and the rest empty.
+    let mut s = s();
+    let html = r#"<table><tr><td colspan=2 rowspan=2>Merged</td><td>c</td></tr><tr><td>d</td></tr></table>"#;
+    s.execute("edit.paste", json!({"at": "B2", "text": "Merged\t\tc\n\t\td", "html": html})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    assert_eq!(sh.merges.len(), 1, "the merged area is made in the destination: {:?}", sh.merges);
+    assert_eq!(sh.merges[0].a1(), "B2:C3", "the area covers the cell's span");
+    assert_eq!(v(&s, "B2"), Value::text("Merged"), "the content stays in the top-left cell");
+    assert_eq!(v(&s, "C2"), Value::Empty, "the rest of the area is empty");
+    assert_eq!(v(&s, "B3"), Value::Empty);
+    assert_eq!(v(&s, "C3"), Value::Empty);
+    assert_eq!(v(&s, "D2"), Value::text("c"), "the cells beside the area keep their content");
+}
+
+#[test]
+fn a_paste_from_excel_keeps_the_borders() {
+    // The clipboard's HTML draws the cell's borders: a paste makes them in the destination.
+    let mut s = s();
+    let html = r#"<table><tr><td style="border:1px solid #000000">boxed</td><td style="border-top:2px dashed #ff0000">top</td></tr></table>"#;
+    s.execute("edit.paste", json!({"at": "A1", "text": "boxed\ttop", "html": html})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let borders = |cell: &str| {
+        let st = d.wb.styles.get(sh.style_id(CellRef::parse(cell).unwrap()));
+        st.borders
+    };
+    let a1 = borders("A1");
+    for side in [a1.left, a1.right, a1.top, a1.bottom] {
+        assert_eq!(side.style, gridcraft_model::BorderStyle::Thin, "the border is made on each side");
+        assert_eq!(side.color, gridcraft_model::Color::Rgb(0x000000), "the border keeps its colour");
+    }
+    let b1 = borders("B1");
+    assert_eq!(b1.top.style, gridcraft_model::BorderStyle::Dashed, "the top border is made");
+    assert_eq!(b1.top.color, gridcraft_model::Color::Rgb(0xFF0000));
+    assert_eq!(b1.left.style, gridcraft_model::BorderStyle::None, "the other sides keep the destination's own");
+}
+
+#[test]
+fn a_paste_from_excel_keeps_the_bold_of_a_run_inside_the_cell() {
+    // A bold run inside the cell (`<b>`, or a span with `font-weight:bold`) makes the whole cell
+    // bold: the model has no runs inside a cell, so this is an approximation.
+    let mut s = s();
+    let html = r#"<table><tr><td><b>bold</b></td><td>plain</td></tr></table>"#;
+    s.execute("edit.paste", json!({"at": "A1", "text": "bold\tplain", "html": html})).unwrap();
+    let d = s.doc().unwrap();
+    let sh = d.wb.active().unwrap();
+    let bold = |cell: &str| d.wb.styles.get(sh.style_id(CellRef::parse(cell).unwrap())).font.bold;
+    assert!(bold("A1"), "the cell with the bold run is bold");
+    assert!(!bold("B1"), "a cell without a bold run stays unbold");
+}
+
+#[test]
 fn pasting_html_with_huge_spans_reads_only_the_text_shape() {
     // #2171: a web page's clipboard HTML with enormous colspan/rowspan crashed paste (OOM). The
     // HTML is now read only as far as the tab-separated text reaches; its numbers still apply.

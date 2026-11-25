@@ -7,6 +7,7 @@ pub mod data;
 pub mod draw;
 pub mod edit;
 pub mod equation;
+pub mod external_links;
 pub mod extra;
 pub mod file;
 pub mod forecast;
@@ -171,6 +172,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(equation::specs());
         v.extend(data::specs());
         v.extend(formulas::specs());
+        v.extend(external_links::specs());
         v.extend(review::specs());
         v.extend(view::specs());
         v.extend(inspect::specs());
