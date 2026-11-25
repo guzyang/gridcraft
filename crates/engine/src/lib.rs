@@ -329,7 +329,13 @@ impl DocState {
         let _ = gridcraft_model::PIVOT_INDEXER.set(pivot::index_cells);
         let mut calc = Calc::new();
         calc.recalc_all(&mut wb);
-        Self::with_calc(wb, calc, path, title, trust)
+        let mut state = Self::with_calc(wb, calc, path, title, trust);
+        // A workbook that reads other workbooks follows the links it can find, as Excel does when
+        // a file opens; one whose source is missing keeps the values the file saved.
+        if matches!(trust, Trust::FromFile) {
+            crate::external_links::auto_refresh_doc(&mut state);
+        }
+        state
     }
     /// A workbook as its file saved it: the dependency graph is built but nothing is
     /// evaluated, so every value is the one the file holds until an edit reaches it. `trust`
