@@ -308,11 +308,21 @@ impl PassHost<'_> {
             if self.iterate {
                 return self.circular_read(k);
             }
-            // Once each, though a suspended evaluation meets it again.
-            if self.cycle_seen.insert(k) {
+            // Every formula on the loop reads 0, as Excel shows it: the ones from `k` back to here
+            // (a suspended evaluation may meet a cell that is not on the stack; that one alone).
+            let mut pushed = false;
+            if let Some(pos) = self.stack.iter().rposition(|x| *x == k) {
+                for member in &self.stack[pos..] {
+                    if self.cycle_seen.insert(*member) {
+                        self.cycles.push(*member);
+                        pushed = true;
+                    }
+                }
+            }
+            if !pushed && self.cycle_seen.insert(k) {
                 self.cycles.push(k);
             }
-            return Value::Error(CellError::Circ);
+            return Value::Number(0.0);
         }
         if self.depth >= MAX_NESTED {
             self.suspend = Some(k);
@@ -324,9 +334,7 @@ impl PassHost<'_> {
         self.in_progress.insert(k);
         self.depth += 1;
         let outer_taint = std::mem::replace(&mut self.taint, false);
-        if self.iterate {
-            self.stack.push(k);
-        }
+        self.stack.push(k);
         let expr = std::sync::Arc::clone(expr);
         let outer_out_of_stack = std::mem::replace(&mut self.out_of_stack, false);
         let v = {
@@ -340,9 +348,7 @@ impl PassHost<'_> {
             self.suspend = Some(k);
             self.depth -= 1;
             self.in_progress.remove(&k);
-            if self.iterate {
-                self.stack.pop();
-            }
+            self.stack.pop();
             self.taint = outer_taint;
             return Value::Error(CellError::Calc);
         }
@@ -351,9 +357,7 @@ impl PassHost<'_> {
             self.depth -= 1;
             self.in_progress.remove(&k);
             self.abandoned.push(k);
-            if self.iterate {
-                self.stack.pop();
-            }
+            self.stack.pop();
             self.taint = outer_taint;
             return Value::Error(CellError::Calc);
         }
@@ -366,8 +370,8 @@ impl PassHost<'_> {
         self.depth -= 1;
         self.in_progress.remove(&k);
         self.pending.remove(&k);
+        self.stack.pop();
         if self.iterate {
-            self.stack.pop();
             if self.taint {
                 self.tainted.insert(k);
             } else {

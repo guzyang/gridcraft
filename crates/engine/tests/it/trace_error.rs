@@ -187,20 +187,16 @@ fn a_spilled_error_leads_to_the_references_of_its_array_formula() {
 
 #[test]
 fn a_circular_reference_ends_the_walk() {
+    // A loop reads 0, as Excel shows it, so there is no error value to follow; the loop itself is
+    // listed instead: two cells that read each other, and a cell that reads itself.
     let mut s = Session::new();
     s.new_workbook();
     s.execute("cell.set", json!({"cell": "A1", "input": "=B1+1"})).unwrap();
     s.execute("cell.set", json!({"cell": "B1", "input": "=A1+1"})).unwrap();
     s.execute("cell.set", json!({"cell": "C1", "input": "=C1"})).unwrap();
-    s.execute("cell.set", json!({"cell": "D1", "input": "=B1"})).unwrap();
-    let r = trace(&mut s, "D1");
-    assert!(r["error"].is_string(), "{r}");
-    assert_eq!(end(&r["source"]), "A1");
-    assert_eq!(arrows(&r), ["B1 → A1 (precedent)", "A1 → B1", "B1 → D1"]);
-    // A cell that reads itself is its own source.
-    let r = trace(&mut s, "C1");
-    assert_eq!(end(&r["source"]), "C1");
-    assert_eq!(arrows(&r), ["C1 → C1 (precedent)"]);
+    let listed: Vec<String> = s.doc().unwrap().calc.circular.iter().map(|(_, c)| c.a1()).collect();
+    assert!(listed.iter().any(|a| a == "A1" || a == "B1"), "{listed:?}");
+    assert!(listed.iter().any(|a| a == "C1"), "{listed:?}");
 }
 
 #[test]

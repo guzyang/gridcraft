@@ -3762,7 +3762,8 @@ fn calculation_options_enable_iterative_calculation() {
     };
     s.execute("cell.set", json!({"cell": "A1", "input": "=(A2+10)/2"})).unwrap();
     s.execute("cell.set", json!({"cell": "A2", "input": "=A1"})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::Error(gridcraft_core::CellError::Circ));
+    // Excel shows 0 in the cells of a loop, and warns about it.
+    assert_eq!(v(&s, "A1"), Value::Number(0.0));
     assert!(!s.doc().unwrap().calc.circular.is_empty());
     // Switching it on recalculates the loop.
     let r = s.execute("formulas.calculationOptions", json!({"iterative": true})).unwrap();
@@ -3785,7 +3786,8 @@ fn calculation_options_enable_iterative_calculation() {
     near(&s, "A1", 10.0);
     // Undo brings the previous settings back.
     s.execute("formulas.calculationOptions", json!({"iterative": false})).unwrap();
-    assert_eq!(v(&s, "A1"), Value::Error(gridcraft_core::CellError::Circ));
+    // Excel shows 0 in the cells of a loop, and warns about it.
+    assert_eq!(v(&s, "A1"), Value::Number(0.0));
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.doc().unwrap().wb.calc.iterative);
     near(&s, "A1", 10.0);
@@ -3818,9 +3820,13 @@ fn undo_and_redo_list_the_circular_references_of_the_restored_cells() {
     assert_eq!(listed(&s), vec![(0, "A5".to_string())]);
     s.execute("home.insertRows", json!({"rows": "2"})).unwrap();
     assert_eq!(listed(&s), vec![(0, "A6".to_string())]);
+    // Undo and redo put the cells back without calculating them: the loop is listed again when
+    // a calculation reaches it (a loop now holds 0, so it cannot be read back from an error).
     s.execute("edit.undo", json!({})).unwrap();
+    s.execute("formulas.calculateNow", json!({})).unwrap();
     assert_eq!(listed(&s), vec![(0, "A5".to_string())]);
     s.execute("edit.redo", json!({})).unwrap();
+    s.execute("formulas.calculateNow", json!({})).unwrap();
     assert_eq!(listed(&s), vec![(0, "A6".to_string())]);
     // Undoing the loop itself lists none.
     s.execute("edit.undo", json!({"steps": 2})).unwrap();

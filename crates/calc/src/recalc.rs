@@ -268,7 +268,13 @@ impl Calc {
             }
         }
         self.graph.settle();
-        self.circular = if wb.calc.iterative { Vec::new() } else { self.loops_among(&circ) };
+        // A formula on a loop holds a number (0) like any other, so the loops cannot be read back
+        // from cached error values: the ones already known stay listed while their formula is
+        // still there, and calculating one of them again finds it.
+        self.circular.retain(|k| self.graph.nodes.contains_key(k));
+        if wb.calc.iterative {
+            self.circular.clear();
+        }
     }
 
     /// The circular references of a rebuilt workbook (after undo, redo or a rollback, which put
@@ -555,6 +561,9 @@ impl Calc {
     /// Evaluates the dirty set and writes results (and spills) back.
     fn run(&mut self, wb: &mut Workbook, mut dirty: Vec<Key>, full: bool) {
         let mut dynamic_again = !self.graph.dynamic.is_empty();
+        // Cells on a loop read 0, as Excel shows them (with iteration off), and everything that
+        // reads them is computed from there. They are held at 0 for the rest of this run.
+        let mut zeroed: HashSet<Key> = HashSet::default();
         self.last_recalc_cells = 0;
         let mut seen: HashSet<Key> = HashSet::default();
         if !full {
@@ -583,6 +592,9 @@ impl Calc {
             dirty.sort_by_key(|(s, c)| (*s, c.row, c.col));
             let mut exprs: HashMap<Key, std::sync::Arc<Expr>> = HashMap::with_capacity_and_hasher(dirty.len(), Default::default());
             for k in &dirty {
+                if zeroed.contains(k) {
+                    continue;
+                }
                 if let Some(e) = wb.sheet(k.0).and_then(|s| s.cell(k.1)).and_then(|c| c.formula.as_ref()).and_then(|f| f.expr_arc()) {
                     exprs.insert(*k, e);
                 }
@@ -620,7 +632,7 @@ impl Calc {
                 let evaluated: HashSet<Key> = dirty.iter().copied().collect();
                 self.circular.retain(|k| !evaluated.contains(k));
             }
-            self.circular.extend(cycles);
+            self.circular.extend(cycles.iter().copied());
             let mut spill_changes = self.write_back(wb, &dirty, results, &spills);
             // Formulas with references only known while evaluating (INDIRECT, OFFSET) may have read
             // a spill area before it was laid out: they are evaluated once more.
@@ -636,10 +648,33 @@ impl Calc {
             }
             spill_changes.sort_by_key(|(s, c)| (*s, c.row, c.col));
             spill_changes.dedup();
+            // Zero the cells this round found on a loop, then compute what reads them once more.
+            if !cycles.is_empty() && !wb.calc.iterative {
+                let mut seeds = Vec::new();
+                for k in &cycles {
+                    if !zeroed.insert(*k) {
+                        continue;
+                    }
+                    if let Some(cell) = wb.sheet_mut(k.0).and_then(|sh| sh.cells.get_mut(k.1)) {
+                        cell.value = Value::Number(0.0);
+                    }
+                    seeds.push(*k);
+                }
+                if !seeds.is_empty() {
+                    dirty = self.dirty_closure(wb, &seeds, &[]);
+                    continue;
+                }
+            }
             if spill_changes.is_empty() {
                 break;
             }
             dirty = self.dirty_closure(wb, &spill_changes, &[]);
+        }
+        // The cells held at 0 are still loops: they are evaluated again when one of them changes.
+        for k in zeroed {
+            if !self.circular.contains(&k) {
+                self.circular.push(k);
+            }
         }
         // Loops among formulas the run did not evaluate stay listed while they are still formulas.
         // Iterative calculation reports none.
