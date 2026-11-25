@@ -1,6 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::Blob;
-use super::font_fallback::{load_fallback, load_preferred_arabic};
+use super::font_fallback::{bold_fallback_faces, load_bold_faces, load_fallback, load_preferred_arabic};
 use super::{Arc, Color32, FontData, FontDefinitions, FontFamily, FontId};
 
 /// A font from the optional craft-fonts build input (`CRAFT_FONTS_DIR` at build time; see
@@ -173,6 +173,23 @@ fn font_file(path: &str, index: u32) -> Option<Blob> {
     let blob: Blob = std::sync::Arc::new(bytes);
     files.insert(path.to_string(), blob.clone());
     Some(blob)
+}
+
+/// The bold face of the first candidate file that has one: a collection (.ttc) holds a family's
+/// weights as separate faces, and the bold one is what a bold cell needs. The file's bytes are
+/// the ones already cached, so a collection is not read twice.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn try_load_bold(paths: &[(&str, u32)]) -> Option<FontData> {
+    for (p, index) in paths {
+        let Some(blob) = font_file(p, *index) else { continue };
+        let probe = FontData::from_blob(std::sync::Arc::clone(&blob), *index);
+        let Some(bold) = crate::fonts::bold_face_index(probe.bytes(), *index) else { continue };
+        if !font_parses(probe.bytes(), bold) {
+            continue;
+        }
+        return Some(FontData::from_blob(blob, bold));
+    }
+    None
 }
 
 /// Last line of defence before [`FontDefinitions`] reach egui: drops every face epaint could not
@@ -486,11 +503,12 @@ pub fn pinned_font_definitions() -> FontDefinitions {
 /// installed, so cells set in them render with them; the rest fall back to the roles. The bound
 /// families are recorded in [`crate::fonts`] so [`cell_family`] only names a family egui has.
 pub fn font_definitions_with(language: crate::i18n::Language, used: &[String]) -> FontDefinitions {
-    let installed = crate::fonts::installed_among(used).into_iter().map(|family| {
-        let faces = crate::fonts::faces_of(&family);
-        (family, faces)
-    });
-    font_definitions_impl(language, installed.collect(), true)
+    // A workbook's font name is bound under that name, with the faces of the family this machine
+    // has for it: the name may be another spelling of the same family (宋体 vs 宋体-简 / Songti SC)
+    // or a font only Windows has (微软雅黑), and the family that stands in for it here has the bold
+    // face a bold cell needs.
+    let installed = crate::fonts::faces_for_names(used);
+    font_definitions_impl(language, installed, true)
 }
 
 /// Builds the role font chains, script fallbacks, installed workbook fonts and optional craft-font faces, drops unparseable data and records which families were bound.
@@ -512,9 +530,12 @@ pub(super) fn font_definitions_impl(
     } else {
         Vec::new()
     };
+    // The bold script faces: a bold cell's Chinese (or Arabic, Hebrew, Thai) would otherwise come
+    // from the regular-weight script face and come out light.
+    let fallback_bold = if system { load_bold_faces(&mut fonts, bold_fallback_faces(HanOrder::of(language))) } else { Vec::new() };
     let hack = fonts.font_data.contains_key(HACK).then_some(HACK);
     for role in [UI, UI_BOLD, CELL, CELL_BOLD, CELL_ITALIC, CELL_BOLD_ITALIC, SERIF, MONO, MATH, MATH_ITALIC, MATH_BOLD] {
-        let chain = build_role_chain(&mut fonts, role, &base_prop, &base_mono, &fallback, hack, system);
+        let chain = build_role_chain(&mut fonts, role, &base_prop, &base_mono, &fallback, &fallback_bold, hack, system);
         fonts.families.insert(FontFamily::Name(role.into()), chain);
         bound.push(role.to_string());
     }
@@ -553,6 +574,7 @@ fn build_role_chain(
     base_prop: &[String],
     base_mono: &[String],
     fallback: &[String],
+    fallback_bold: &[String],
     hack: Option<&str>,
     system: bool,
 ) -> Vec<String> {
@@ -591,6 +613,17 @@ fn build_role_chain(
         && !chain.iter().any(|k| k.as_str() == hack)
     {
         chain.push(hack.to_string());
+    }
+    // A bold role draws its script text with the bold face of that script: the regular-weight
+    // script face would make a bold Chinese (or Arabic, Hebrew, Thai) cell look light.
+    let bold_role = role.contains("bold");
+    if bold_role {
+        for key in fallback {
+            let bold_key = format!("{key}-bold");
+            if fallback_bold.contains(&bold_key) && fonts.font_data.contains_key(&bold_key) {
+                chain.push(bold_key);
+            }
+        }
     }
     chain.extend(fallback.iter().cloned());
     chain.retain(|k| fonts.font_data.contains_key(k));

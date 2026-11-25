@@ -41,6 +41,17 @@ pub(crate) fn read_font(_path: &std::path::Path) -> Option<Vec<u8>> {
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FAMILY_NAMES: usize = 16;
 
+/// The weight implied by a face's family and style names.
+///
+/// The style name is the usual source ("Bold", "Semibold"), but the Hiragino and PingFang faces
+/// carry their weight in the family name ("Hiragino Sans GB W6"), so both are read: a family that
+/// names a weight states it, and only a family that names none leaves the weight to the style.
+#[cfg(not(target_arch = "wasm32"))]
+fn face_weight(family: &str, style: &str) -> f32 {
+    let by_family = style_weight(family);
+    if by_family != 400.0 { by_family } else { style_weight(style) }
+}
+
 /// One face of one installed font file.
 #[derive(Clone, Debug)]
 pub struct Face {
@@ -111,6 +122,14 @@ fn style_weight(style: &str) -> f32 {
         ("bold", 700.0),
         ("black", 900.0),
         ("heavy", 900.0),
+        // The Hiragino and Apple CJK faces name their weights W3..W9.
+        ("w9", 900.0),
+        ("w8", 800.0),
+        ("w7", 700.0),
+        ("w6", 600.0),
+        ("w5", 500.0),
+        ("w4", 400.0),
+        ("w3", 300.0),
     ];
     TABLE.iter().find(|(k, _)| s.contains(k)).map(|(_, w)| *w).unwrap_or(400.0)
 }
@@ -192,7 +211,8 @@ pub fn scan_dirs(dirs: &[PathBuf]) -> Vec<Face> {
             }
             let Some(data) = read_font(&path) else { continue };
             for (index, family, names, style) in file_faces(&data) {
-                out.push(Face { family, names, path: path.clone(), index, weight: style_weight(&style), italic: style_italic(&style) });
+                let weight = face_weight(&family, &style);
+                out.push(Face { family, names, path: path.clone(), index, weight, italic: style_italic(&style) });
             }
         }
     }
@@ -240,6 +260,46 @@ pub fn scan_done() -> bool {
 /// pick from).
 pub fn faces_of(family: &str) -> Vec<Face> {
     catalog_now().map(|cat| faces_named(cat, family)).unwrap_or_default()
+}
+
+/// The faces of the family that answers to `name`, or to one of the spellings the same family has
+/// on this machine: a workbook says 宋体, macOS calls it 宋体-简 / Songti SC. `None` when no
+/// installed family answers to any of them.
+pub fn faces_for(name: &str) -> Option<Vec<Face>> {
+    for candidate in family_candidates(name) {
+        let faces = faces_of(&candidate);
+        if !faces.is_empty() {
+            return Some(faces);
+        }
+    }
+    None
+}
+
+/// The workbook's font names with the faces to draw them in: the family that answers to the name
+/// itself, or to one of its other spellings here. A name no installed family answers to is
+/// dropped, so it falls back to the built-in roles.
+pub fn faces_for_names(names: &[String]) -> Vec<(String, Vec<Face>)> {
+    let mut out: Vec<(String, Vec<Face>)> = Vec::new();
+    for name in names {
+        let Some(faces) = faces_for(name) else { continue };
+        if out.iter().any(|(n, _)| n == name) {
+            continue;
+        }
+        out.push((name.clone(), faces));
+    }
+    out
+}
+
+/// An installed face of one of `families` that is heavier than regular, when the machine has one:
+/// the script fallbacks draw Chinese, Arabic, Hebrew and Thai with a regular-weight face, so a
+/// bold cell's text in those scripts comes out light.
+pub fn bold_face_of(families: &[&str]) -> Option<Face> {
+    let cat = catalog_now()?;
+    cat.iter()
+        .filter(|f| f.weight >= 600.0 && !f.italic)
+        .filter(|f| families.iter().any(|name| f.answers_to(name)))
+        .max_by(|a, b| a.weight.total_cmp(&b.weight))
+        .cloned()
 }
 
 /// The faces in `cat` that go by `wanted`. When two families claim one name the winner is fixed,
@@ -305,6 +365,97 @@ pub fn families() -> Vec<String> {
 pub fn role_key(family: &str, bold: bool, italic: bool) -> String {
     format!("fnt:{family}:{}{}", if bold { 'b' } else { 'n' }, if italic { 'i' } else { 'n' })
 }
+
+/// The face index of a bold face in `data`, when the file has one: a collection (.ttc) holds a
+/// family's weights as separate faces, and the bold one is what a bold cell needs.
+///
+/// The face at `preferred` wins when it is bold itself: the region-merged Noto Sans CJK files hold
+/// one face per locale (JP 0, KR 1, SC 2, TC 3, HK 4), and the bold file has the same layout, so
+/// the bold face of the same locale is the one to pick.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn bold_face_index(data: &[u8], preferred: u32) -> Option<u32> {
+    let faces = file_faces(data);
+    let is_bold = |index: u32, family: &str, style: &str| index == preferred && !style_italic(style) && face_weight(family, style) >= 600.0;
+    if faces.iter().any(|(index, family, _, style)| is_bold(*index, family, style)) {
+        return Some(preferred);
+    }
+    faces
+        .into_iter()
+        .filter(|(index, family, _, style)| !style_italic(style) && face_weight(family, style) >= 600.0)
+        .max_by(|a, b| face_weight(&b.1, &b.3).total_cmp(&face_weight(&a.1, &a.3)).then(a.0.cmp(&b.0)))
+        .map(|(index, _, _, _)| index)
+}
+
+/// The families one name may mean on this machine: the name itself, then the spellings the same
+/// family has in Chinese and in Latin, then the family that stands in for it here.
+///
+/// A workbook written on Windows says 宋体; macOS calls that family 宋体-简 / Songti SC. Without
+/// this the name never matches an installed family, so the cell falls back to the generic role and
+/// Chinese is drawn by the regular-weight script fallback — a bold cell that does not look bold.
+pub fn family_candidates(name: &str) -> Vec<String> {
+    let mut out = vec![name.to_string()];
+    let mut push = |c: &str| {
+        if !out.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+            out.push(c.to_string());
+        }
+    };
+    for group in FONT_ALIASES {
+        let names: Vec<&str> = group.iter().copied().collect();
+        if names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            for alias in names {
+                push(alias);
+            }
+        }
+    }
+    for substitute in FONT_SUBSTITUTES {
+        if substitute.0.eq_ignore_ascii_case(name) {
+            for alias in substitute.1 {
+                push(alias);
+            }
+        }
+    }
+    out
+}
+
+/// The families a Chinese workbook's font names may mean here: each group holds the spellings of
+/// one family, Chinese and Latin. The order is the order they are tried.
+const FONT_ALIASES: &[&[&str]] = &[
+    &["宋体", "SimSun", "NSimSun", "Songti SC", "宋体-简", "STSong"],
+    &["黑体", "SimHei", "Heiti SC", "黑体-简", "STHeiti"],
+    &["楷体", "KaiTi", "Kaiti SC", "楷体-简", "STKaiti"],
+    &["仿宋", "FangSong", "STFangsong", "仿宋-简"],
+    &["微软雅黑", "Microsoft YaHei", "Microsoft YaHei UI"],
+    &["等线", "DengXian", "DengXian Light"],
+    &["苹方", "PingFang SC", "PingFang TC", "苹方-简"],
+    &["华文细黑", "STXihei", "华文细黑-简"],
+    &["华文黑体", "STHeiti", "华文黑体-简"],
+    &["华文楷体", "STKaiti", "华文楷体-简"],
+    &["华文宋体", "STSong", "华文宋体-简"],
+    &["方正书宋", "FZShuSong", "方正书宋-简"],
+    &["方正黑体", "FZHei", "方正黑体-简"],
+];
+
+/// The family that stands in for a workbook's font when the machine has none of it: the Windows
+/// fonts a Chinese workbook names are not on macOS, and the system's own Chinese face is the
+/// closest match — and it has a heavier face, so a bold cell still looks bold.
+const FONT_SUBSTITUTES: &[(&str, &[&str])] = &[
+    ("宋体", &["Songti SC", "宋体-简", "STSong"]),
+    ("SimSun", &["Songti SC", "宋体-简", "STSong"]),
+    ("黑体", &["Heiti SC", "黑体-简", "STHeiti"]),
+    ("SimHei", &["Heiti SC", "黑体-简", "STHeiti"]),
+    ("楷体", &["Kaiti SC", "楷体-简", "STKaiti"]),
+    ("KaiTi", &["Kaiti SC", "楷体-简", "STKaiti"]),
+    ("仿宋", &["STFangsong", "仿宋-简"]),
+    ("FangSong", &["STFangsong", "仿宋-简"]),
+    ("微软雅黑", &["PingFang SC", "苹方-简"]),
+    ("Microsoft YaHei", &["PingFang SC", "苹方-简"]),
+    ("等线", &["PingFang SC", "苹方-简"]),
+    ("DengXian", &["PingFang SC", "苹方-简"]),
+    ("华文细黑", &["STXihei", "华文细黑-简"]),
+    ("华文黑体", &["STHeiti", "华文黑体-简"]),
+    ("华文楷体", &["STKaiti", "华文楷体-简"]),
+    ("华文宋体", &["STSong", "华文宋体-简"]),
+];
 
 /// The face to use for a role, or `None` when the family has no faces. Missing bold/italic faces
 /// fall back to the family's regular face, so every bound role has data behind it.
@@ -415,6 +566,35 @@ mod tests {
         assert_eq!(role_key("Segoe UI", true, false), "fnt:Segoe UI:bn");
         assert_eq!(role_key("Segoe UI", false, true), "fnt:Segoe UI:ni");
         assert_eq!(role_key("Segoe UI", true, true), "fnt:Segoe UI:bi");
+    }
+
+    #[test]
+    fn a_workbook_font_name_finds_the_family_this_machine_has_for_it() {
+        // A workbook written on Windows says 宋体; macOS calls that family 宋体-简 / Songti SC, so
+        // the name must reach the installed family instead of falling back to the generic role.
+        let candidates = family_candidates("宋体");
+        assert!(candidates.iter().any(|c| c == "Songti SC"), "{candidates:?}");
+        assert!(candidates.iter().any(|c| c == "宋体-简"), "{candidates:?}");
+        // The name itself comes first: a family installed under that exact name wins.
+        assert_eq!(candidates[0], "宋体");
+        // A Latin name keeps its own spelling and gains no substitute.
+        assert_eq!(family_candidates("Arial"), vec!["Arial".to_string()]);
+    }
+
+    #[test]
+    fn a_windows_only_chinese_font_falls_back_to_the_system_family() {
+        // 微软雅黑 is not on macOS; the system's own Chinese face stands in for it.
+        let candidates = family_candidates("微软雅黑");
+        assert!(candidates.iter().any(|c| c == "PingFang SC"), "{candidates:?}");
+    }
+
+    #[test]
+    fn the_weight_comes_from_the_family_name_when_the_style_does_not_say() {
+        // The Hiragino and PingFang faces carry their weight in the family name.
+        assert_eq!(face_weight("Hiragino Sans GB W6", "Regular"), 600.0);
+        assert_eq!(face_weight("Hiragino Sans GB W3", "Regular"), 300.0);
+        assert_eq!(face_weight("PingFang SC", "Semibold"), 600.0);
+        assert_eq!(face_weight("Songti SC", "Bold"), 700.0);
     }
 
     #[test]

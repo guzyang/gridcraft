@@ -3,7 +3,7 @@ use super::Arc;
 use super::FontDefinitions;
 use super::font_setup::HanOrder;
 #[cfg(not(target_arch = "wasm32"))]
-use super::font_setup::{in_dirs, try_load};
+use super::font_setup::{in_dirs, try_load, try_load_bold};
 
 /// Loads the system non-Latin fallback faces (one file per script family) and returns their keys so
 /// every family can carry them as fallback. egui's bundled fonts have no coverage beyond Latin, so
@@ -16,11 +16,113 @@ pub(super) fn load_fallback(fonts: &mut FontDefinitions, han: HanOrder) -> Vec<S
     load_faces(fonts, fallback_faces(han), loaded)
 }
 
+/// Loads the bold face of every script family, so bold text in those scripts is drawn bold: the
+/// script fallback a chain ends with is a regular-weight face, and a bold cell's Chinese (or
+/// Arabic, Hebrew, Thai) would come out light.
+///
+/// The bold face is the one in the same file as the regular face when the file holds a family's
+/// weights (Hiragino Sans GB W3/W6, Geeza Pro, Arial Hebrew), else a separate bold file (Microsoft
+/// YaHei Bold, Noto Sans CJK Bold). The file's bytes are shared with the regular face, so a
+/// collection does not cost twice.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn load_bold_faces(fonts: &mut FontDefinitions, faces: Vec<(&'static str, Vec<(String, u32)>)>) -> Vec<String> {
+    let mut keys = Vec::new();
+    for (key, cands) in faces {
+        let refs: Vec<(&str, u32)> = cands.iter().map(|(p, i)| (p.as_str(), *i)).collect();
+        let Some(mut fd) = try_load_bold(&refs) else { continue };
+        // CJK text shares the Latin baseline; symbols and emoji keep box centering.
+        fd.tweak.set_baseline_fallback(key.starts_with("sys-cjk-"));
+        fonts.font_data.insert(format!("{key}-bold"), Arc::new(fd));
+        keys.push(format!("{key}-bold"));
+    }
+    keys
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn load_bold_faces(_fonts: &mut FontDefinitions, _faces: Vec<(&'static str, Vec<(String, u32)>)>) -> Vec<String> {
+    Vec::new()
+}
+
 /// The preferred Arabic file, once [`load_preferred_arabic`] has loaded it: a file that failed to
 /// load must not keep the system Arabic faces out of the chains.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn preferred_file(fonts: &FontDefinitions, preferred: Option<(String, u32)>) -> Vec<String> {
     preferred.filter(|_| fonts.font_data.contains_key(PREFERRED_ARABIC)).map(|(path, _)| path).into_iter().collect()
+}
+
+/// The bold candidates of each script family: the same files as the regular fallback (a collection
+/// holds a family's weights, so the bold face is in the same file) plus the bold-only files some
+/// platforms ship (Microsoft YaHei Bold, Noto Sans CJK Bold).
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn bold_fallback_faces(han: HanOrder) -> Vec<(&'static str, Vec<(String, u32)>)> {
+    fallback_faces(han).into_iter().map(|(key, cands)| {
+        let mut v = cands;
+        v.extend(bold_files(key));
+        (key, v)
+    }).collect()
+}
+
+/// The files that hold a bold face of a script. The index is not used: the bold face in a
+/// collection is found by its own name table, so the file is enough.
+#[cfg(not(target_arch = "wasm32"))]
+fn bold_files(key: &str) -> Vec<(String, u32)> {
+    let win = windows_fonts();
+    let mac = "/System/Library/Fonts";
+    let mac_sup = "/System/Library/Fonts/Supplemental";
+    let mut v: Vec<(String, u32)> = Vec::new();
+    match key {
+        "sys-cjk-han-zh" => {
+            v.push((format!("{win}\\msyhbd.ttc"), 0)); // Microsoft YaHei Bold
+            v.push((format!("{mac}/Hiragino Sans GB.ttc"), 0)); // W6, beside the W3 in this file
+            v.push((format!("{mac_sup}/Songti.ttc"), 0)); // Songti SC Bold
+            for d in LINUX_CJK_DIRS {
+                v.push((format!("{d}/NotoSansCJK-Bold.ttc"), 0));
+                v.push((format!("{d}/NotoSansCJKsc-Bold.otf"), 0));
+            }
+        }
+        "sys-cjk-han-ja" => {
+            v.push((format!("{win}\\YuGothB.ttc"), 0));
+            v.push((format!("{mac}/ヒラギノ角ゴシック W6.ttc"), 0));
+            for d in LINUX_CJK_DIRS {
+                v.push((format!("{d}/NotoSansCJK-Bold.ttc"), 0));
+            }
+        }
+        "sys-cjk-hangul" => {
+            v.push((format!("{win}\\malgunb.ttf"), 0));
+            v.push((format!("{mac}/AppleSDGothicNeo.ttc"), 0));
+            for d in LINUX_CJK_DIRS {
+                v.push((format!("{d}/NotoSansCJK-Bold.ttc"), 0));
+            }
+        }
+        "sys-thai" => {
+            v.push((format!("{win}\\tahomabd.ttf"), 0));
+            v.push((format!("{mac_sup}/Thonburi.ttc"), 0));
+            for d in linux_noto_dirs() {
+                v.push((format!("{d}/NotoSansThai-Bold.ttf"), 0));
+            }
+        }
+        "sys-hebrew" => {
+            v.push((format!("{win}\\davidbd.ttf"), 0));
+            v.push((format!("{mac}/ArialHB.ttc"), 0));
+            for d in linux_noto_dirs() {
+                v.push((format!("{d}/NotoSansHebrew-Bold.ttf"), 0));
+            }
+        }
+        "sys-arabic" => {
+            v.push((format!("{win}\\tahomabd.ttf"), 0));
+            v.push((format!("{mac}/GeezaPro.ttc"), 0));
+            for d in linux_noto_dirs() {
+                v.push((format!("{d}/NotoSansArabic-Bold.ttf"), 0));
+            }
+        }
+        _ => {}
+    }
+    v
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn bold_fallback_faces(_han: HanOrder) -> Vec<(&'static str, Vec<(String, u32)>)> {
+    Vec::new()
 }
 
 /// Loads the first candidate of each fallback face that loads and returns their keys. `loaded`

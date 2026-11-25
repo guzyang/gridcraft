@@ -1,26 +1,9 @@
-# 我们对 GridCraft 的改动与使用说明
+# 我们对 GridCraft 的改动（逐版本）
 
-本文记录我们在上游 GridCraft（github.com/storytold/gridcraft，v0.19.1）基础上做的每一轮改动，
-以及这版 macOS 版的用法。源码在本 fork：`github.com/guzyang/gridcraft-mac-build`。
+本文只记录我们在上游 GridCraft（github.com/storytold/gridcraft，v0.19.1）基础上每一版做了什么。
+每一版在 GitHub release 上有对应的下载页。
 
-每一版都在 GitHub release 上有对应的下载页（Assets 里是未签名的 .dmg）。
-
-## 安装（macOS，未签名版）
-
-1. 下载 `gridcraft-*-macos-aarch64.dmg`（Apple Silicon；Intel 机器需要 universal 包）
-2. 终端里解除 Gatekeeper 的拦截（不需要密码）：
-
-   ```
-   xattr -dr com.apple.quarantine ~/Downloads/gridcraft-0.19.1-v3-macos-aarch64.dmg
-   ```
-
-3. 双击 dmg，把 GridCraft 拖进 Applications
-4. 第一次打开：在 GridCraft 上右键 → 打开 → 再点「打开」
-   （提示"无法验证开发者"就去 系统设置 → 隐私与安全性 → 仍要打开）
-
-**注意**：别点应用自己的"更新"提示。更新会把我们改过的版本换回官方版，这些改动就没了。
-
-## 各版本改动
+## 改动
 
 ### v1 —— 批注的时间与人名（`v0.19.1-comment-dates`）
 
@@ -53,32 +36,21 @@ v1 的回复框在右侧面板里，得先找到面板才能回复；这一版�
   中文不再靠机器上碰巧装了什么字体
 - macOS 构建只出 Apple Silicon 一个包（更快、体积更小）
 
-## 还没做的
+## v4 —— 中文字体与粗体（`v0.19.1-v4`）
 
-- **外部工作簿链接**：指向另一个 .xlsx 文件的单元格链接还不支持（上游 #3644）。本轮只做到
-  "打开时能显示 Excel 缓存的值、不报错"，还不能自动刷新
-- **粘贴时的合并单元格与边框**：目前会丢（下一轮做）
-- **一格内多种颜色的富文本**：不支持（上游 #774）
-- **中文粗体**：见下一节
-- **字体下拉里选不到系统中文字体**：目前只列 17 个写死的英文字体名（下一轮做）
+- **中文字体名认得出了**：工作簿里写「宋体」，这台机器上叫「宋体-简 / Songti SC」；以前名字对不上，
+  单元格就退回通用字体。现在「宋体/黑体/楷体/仿宋/微软雅黑/等线/苹方/华文系列」都能找到本机对应的
+  家族；Windows 独有的字体（微软雅黑等）用系统自带的中文家族顶上
+- **粗体真的粗了**：中文（以及阿拉伯文、希伯来文、泰文、韩文）的粗体面现在按字重单独加载，
+  不再拿常规字重的字来画——之前粗体单元格里的中文看着是细的
+- **字体下拉列出本机真实装的字体**：以前只有 17 个写死的英文字体名，macOS 装的中文字体一个都选不到
 
-## 中文粗体的原因与下一步（计划）
+## 使用说明（macOS 未签名版）
 
-原因：GridCraft 的字体绑定是**按名字精确匹配**的。macOS 上宋体叫「宋体-简 / Songti SC」，
-工作簿里写的是「宋体 / SimSun」，名字对不上 → 退回通用 CELL_BOLD 角色 → 中文由脚本回退字体
-（PingFang / Hiragino / Noto CJK 的**常规字重**）绘制，于是中文看起来没有加粗。
+1. 下载 release 里的 `gridcraft-*-macos-aarch64.dmg`（Apple Silicon；Intel 机器需要 universal 包）
+2. 终端里解除 Gatekeeper 的拦截（不需要密码）：
+   `xattr -dr com.apple.quarantine ~/Downloads/<文件名>`
+3. 双击 dmg，把 GridCraft 拖进 Applications
+4. 第一次打开：在 GridCraft 上右键 → 打开 → 再点「打开」
 
-计划三步：
-
-1. **别名映射**：把工作簿常见中文字体名映射到系统里的实际字体名（宋体→宋体-简/Songti SC、
-   黑体→黑体-简/Heiti SC、楷体→楷体-简/Kaiti SC、微软雅黑→Microsoft YaHei …），
-   映射后走已有的 `pick_face` 逻辑，直接选中系统里**真正的粗体字面**
-2. **脚本回退按字重选面**：回退链目前与粗细无关。改为按字重挑面（用已有的字体名表解析找
-   Bold/Semibold/Medium 字面），中文、阿拉伯文、希伯来文、泰文、天城文一并受益
-3. 找不到任何粗体字面时，最后才考虑"合成加粗"（同一字形偏移画两次），这层要改绘制路径，放最后
-
-## 验证方式
-
-- 引擎与公式：`cargo test -p gridcraft-engine -p gridcraft-formula`（八戒上跑）
-- 界面：`cargo test -p gridcraft-ui-egui`
-- 每一轮改动都有对应的回归测试（排序带记录、复制表带自引用、粘贴保格式、批注卡片渲染）
+别点应用自己的"更新"提示：一更新就换回官方版，本页这些改动就没了。
