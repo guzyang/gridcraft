@@ -381,7 +381,7 @@ pub(crate) fn bold_face_index(data: &[u8], preferred: u32) -> Option<u32> {
     }
     faces
         .into_iter()
-        .filter(|(index, family, _, style)| !style_italic(style) && face_weight(family, style) >= 600.0)
+        .filter(|(_, family, _, style)| !style_italic(style) && face_weight(family, style) >= 600.0)
         .max_by(|a, b| face_weight(&b.1, &b.3).total_cmp(&face_weight(&a.1, &a.3)).then(a.0.cmp(&b.0)))
         .map(|(index, _, _, _)| index)
 }
